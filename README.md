@@ -24,6 +24,8 @@ docker compose run --rm radar
 
 The first command starts a local PostGIS container, creates the restricted `eeg20_writer` role and the `iris_staging` schema, and runs the full test suite against it. The second screens the fixture data, writes to `iris_staging`, and puts the report and CSV in `./output/`.
 
+The `radar` container starts as root only to prepare `./output/`, then runs the tool as the owner of that folder (`docker/entrypoint.sh`). If the folder doesn't exist yet, Docker creates it and the files belong to the container's `radar` user (uid 10001). Create `output/` yourself first if you want the files to belong to you.
+
 To check the staged data:
 
 ```bash
@@ -243,6 +245,6 @@ src/eeg20_radar/
 fixtures/mastr/  synthetic MaStR sample
 tests/           pytest suite
 sql/             validation queries
-docker/initdb/   staging role and schema setup
+docker/          entrypoint, staging role and schema setup
 examples/        example run output
 ```

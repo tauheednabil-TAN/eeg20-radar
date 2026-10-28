@@ -22,8 +22,8 @@ jobs:
       EEG20_TEST_DATABASE_URL: postgresql://eeg20_writer:ci-writer@localhost:55432/iris_staging_db
       EEG20_TEST_ADMIN_URL: postgresql://postgres:ci-admin@localhost:55432/iris_staging_db
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install -r requirements-dev.txt
@@ -55,7 +55,7 @@ jobs:
   docker:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: cp .env.example .env
       - run: docker compose --profile test run --rm tests
       - run: docker compose run --rm radar

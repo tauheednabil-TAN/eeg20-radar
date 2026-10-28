@@ -41,6 +41,7 @@ services:
 
   tests:
     profiles: ["test"]
+    user: radar
     build:
       context: .
       args:

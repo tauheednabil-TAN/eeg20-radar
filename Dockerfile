@@ -17,9 +17,10 @@ COPY src ./src
 COPY fixtures ./fixtures
 COPY tests ./tests
 COPY sql ./sql
+COPY docker/entrypoint.sh ./docker/entrypoint.sh
 
-RUN useradd --create-home --uid 10001 radar && mkdir -p /app/output && chown radar /app/output
-USER radar
+RUN useradd --create-home --uid 10001 radar && mkdir -p /app/output && chown radar:radar /app/output
 
-ENTRYPOINT ["python", "-m", "eeg20_radar"]
+# The entrypoint drops root before running the tool (see docker/entrypoint.sh).
+ENTRYPOINT ["/app/docker/entrypoint.sh"]
 CMD ["run"]
