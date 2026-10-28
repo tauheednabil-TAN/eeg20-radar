@@ -1,0 +1,209 @@
+{
+  "run_id": "20261028T214223Z-4bf8d7d2",
+  "rule_version": "eeg-term-v1",
+  "scope": "NW",
+  "reference_date": "2026-01-01",
+  "horizon_years": 5,
+  "result_digest": "9320195fb00bb2d6692cc8b8303b3566ba593719703d2cc7e6fbdcb3e0916008",
+  "sources": [
+    {
+      "kind": "unit",
+      "file": "EinheitenSolar_1.xml",
+      "sha256": "31a640310680565bad531771f7a81b8285d6a044d94a4649a402c9b102b7bbbd",
+      "size_bytes": 32376
+    },
+    {
+      "kind": "eeg",
+      "file": "AnlagenEegSolar_1.xml",
+      "sha256": "cf182d2266c817638bd6b18d529427eedc3c3ba016ddf342c6597905f2e24eb7",
+      "size_bytes": 12670
+    }
+  ],
+  "counts": {
+    "units_read": 37,
+    "eeg_records_read": 31,
+    "units_unique": 33,
+    "eeg_records_unique": 29,
+    "units_out_of_scope": 2,
+    "units_staged": 29,
+    "eeg_records_unreferenced_in_scope": 4,
+    "rejected": 8
+  },
+  "staged_by_status": {
+    "confirmed": 14,
+    "incomplete": 6,
+    "needs_review": 9
+  },
+  "coverage_confirmed_pct": 48.3,
+  "coverage_with_expiry_pct": 79.3,
+  "staged_by_bucket": {
+    "beyond_horizon": 2,
+    "expired": 7,
+    "unknown": 6,
+    "within_horizon": 14
+  },
+  "spatial_precision": {
+    "point": 27,
+    "postcode": 2
+  },
+  "flags": {
+    "COORDINATES_INVALID": {
+      "count": 1,
+      "severity": "info"
+    },
+    "COORDINATES_OUTSIDE_REGION_BBOX": {
+      "count": 1,
+      "severity": "review"
+    },
+    "DATE_MISMATCH_UNIT_VS_EEG": {
+      "count": 1,
+      "severity": "review"
+    },
+    "EEG2021_TERM_RULE_UNVERIFIED": {
+      "count": 1,
+      "severity": "review"
+    },
+    "EEG_DATE_INVALID": {
+      "count": 1,
+      "severity": "blocking"
+    },
+    "EEG_DATE_IN_FUTURE": {
+      "count": 1,
+      "severity": "blocking"
+    },
+    "EEG_DATE_MISSING": {
+      "count": 1,
+      "severity": "blocking"
+    },
+    "EEG_LINK_INCONSISTENT": {
+      "count": 1,
+      "severity": "review"
+    },
+    "EEG_RECORD_NOT_FOUND": {
+      "count": 1,
+      "severity": "blocking"
+    },
+    "IMPLAUSIBLE_EARLY_DATE": {
+      "count": 1,
+      "severity": "review"
+    },
+    "NOT_GRID_OPERATOR_VERIFIED": {
+      "count": 1,
+      "severity": "review"
+    },
+    "NO_EEG_LINK": {
+      "count": 2,
+      "severity": "blocking"
+    },
+    "POWER_INVALID": {
+      "count": 1,
+      "severity": "info"
+    },
+    "PRE_EEG2000_DEEMED_2000": {
+      "count": 2,
+      "severity": "info"
+    },
+    "REGION_CONFLICT": {
+      "count": 1,
+      "severity": "review"
+    },
+    "SHARED_EEG_ANLAGE": {
+      "count": 2,
+      "severity": "info"
+    },
+    "UNIT_NOT_COMMISSIONED": {
+      "count": 1,
+      "severity": "blocking"
+    },
+    "UNIT_PERMANENTLY_DECOMMISSIONED": {
+      "count": 1,
+      "severity": "review"
+    },
+    "UNIT_TEMPORARILY_DECOMMISSIONED": {
+      "count": 1,
+      "severity": "review"
+    }
+  },
+  "rejects_by_reason": {
+    "DUPLICATE_EXACT": 1,
+    "DUPLICATE_SUPERSEDED": 2,
+    "INVALID_EEG_ID": 1,
+    "INVALID_UNIT_ID": 1,
+    "MISSING_UNIT_ID": 1,
+    "NOT_SOLAR": 1,
+    "REGION_UNKNOWN": 1
+  },
+  "rejects": [
+    {
+      "source": "AnlagenEegSolar_1.xml#27",
+      "record_id": "EEG900000000034",
+      "reason": "DUPLICATE_SUPERSEDED",
+      "detail": "superseded by AnlagenEegSolar_1.xml#28"
+    },
+    {
+      "source": "AnlagenEegSolar_1.xml#31",
+      "record_id": "EEG-BROKEN",
+      "reason": "INVALID_EEG_ID",
+      "detail": "unexpected format 'EEG-BROKEN'"
+    },
+    {
+      "source": "EinheitenSolar_1.xml#15",
+      "record_id": "SEE900000000015",
+      "reason": "DUPLICATE_SUPERSEDED",
+      "detail": "superseded by EinheitenSolar_1.xml#16"
+    },
+    {
+      "source": "EinheitenSolar_1.xml#18",
+      "record_id": "SEE900000000016",
+      "reason": "DUPLICATE_EXACT",
+      "detail": "identical copy"
+    },
+    {
+      "source": "EinheitenSolar_1.xml#19",
+      "record_id": null,
+      "reason": "MISSING_UNIT_ID",
+      "detail": "EinheitMastrNummer is empty"
+    },
+    {
+      "source": "EinheitenSolar_1.xml#20",
+      "record_id": "SEE12",
+      "reason": "INVALID_UNIT_ID",
+      "detail": "unexpected format 'SEE12'"
+    },
+    {
+      "source": "EinheitenSolar_1.xml#21",
+      "record_id": "SEE900000000019",
+      "reason": "NOT_SOLAR",
+      "detail": "Energietraeger 2497"
+    },
+    {
+      "source": "EinheitenSolar_1.xml#24",
+      "record_id": "SEE900000000022",
+      "reason": "REGION_UNKNOWN",
+      "detail": "no usable Gemeindeschluessel or Bundesland"
+    }
+  ],
+  "repowering_candidates": {
+    "count": 20,
+    "net_power_kw": 2288.3,
+    "by_expiry_year": {
+      "2020": 2,
+      "2023": 1,
+      "2024": 2,
+      "2025": 1,
+      "2026": 4,
+      "2027": 2,
+      "2028": 3,
+      "2029": 3,
+      "2030": 2
+    }
+  },
+  "acceptance_checks": {
+    "incomplete_rows_with_expiry": [],
+    "expiry_without_eeg_date": [],
+    "passed": true
+  },
+  "database": {
+    "rows_not_seen_this_run": 0
+  }
+}

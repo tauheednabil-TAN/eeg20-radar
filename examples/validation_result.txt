@@ -1,0 +1,99 @@
+SELECT
+    count(*) FILTER (WHERE expiry_status = 'incomplete' AND expiry_year IS NOT NULL) AS incomplete_with_expiry,
+    count(*) FILTER (WHERE expiry_year IS NOT NULL AND eeg_commissioning_date IS NULL) AS expiry_without_eeg_date
+FROM iris_staging.eeg_repowering_targets;
+ incomplete_with_expiry | expiry_without_eeg_date 
+------------------------+-------------------------
+                      0 |                       0
+(1 row)
+
+SELECT count(*) AS rule_violations
+FROM iris_staging.eeg_repowering_targets
+WHERE expiry_year IS NOT NULL
+  AND remuneration_end_date
+      <> make_date(greatest(extract(year FROM eeg_commissioning_date)::int, 2000) + 20, 12, 31);
+ rule_violations 
+-----------------
+               0
+(1 row)
+
+SELECT expiry_status, count(*) AS units, round(sum(net_power_kw)::numeric, 1) AS net_kw
+FROM iris_staging.eeg_repowering_targets
+GROUP BY expiry_status
+ORDER BY expiry_status;
+ expiry_status | units | net_kw 
+---------------+-------+--------
+ confirmed     |    14 | 2139.4
+ incomplete    |     6 |   58.8
+ needs_review  |     9 | 5168.5
+(3 rows)
+
+SELECT expiry_year, municipality_key, municipality,
+       count(*) AS units, round(sum(net_power_kw)::numeric, 1) AS net_kw
+FROM iris_staging.eeg_repowering_targets
+WHERE is_repowering_candidate
+GROUP BY expiry_year, municipality_key, municipality
+ORDER BY expiry_year, municipality_key;
+ expiry_year | municipality_key | municipality | units | net_kw 
+-------------+------------------+--------------+-------+--------
+        2020 | 05913000         | Dortmund     |     2 |   14.0
+        2023 | 05314000         | Bonn         |     1 |    9.8
+        2024 | 05111000         | Düsseldorf   |     1 |   25.0
+        2024 | 05113000         | Essen        |     1 |    9.8
+        2025 | 05515000         | Münster      |     1 |    9.8
+        2026 | 05111000         | Düsseldorf   |     1 |    9.8
+        2026 | 05315000         | Köln         |     3 |   49.2
+        2027 | 05112000         | Duisburg     |     1 |   99.9
+        2027 | 05113000         | Essen        |     1 |    9.8
+        2028 | 05315000         | Köln         |     1 |   12.5
+        2028 | 05316000         | Leverkusen   |     1 |    9.8
+        2028 | 05515000         | Münster      |     1 |  749.5
+        2029 | 05911000         | Bochum       |     1 |    9.8
+        2029 | 05913000         | Dortmund     |     2 |   19.6
+        2030 | 05113000         | Essen        |     1 | 1250.0
+        2030 | 05314000         | Bonn         |     1 |       
+(16 rows)
+
+SELECT mastr_unit_id, expiry_year, expiry_status,
+       round(ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint(6.9583, 50.9413), 4326)::geography)) AS distance_m
+FROM iris_staging.eeg_repowering_targets
+WHERE is_repowering_candidate
+  AND geom IS NOT NULL
+  AND ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint(6.9583, 50.9413), 4326)::geography, 10000)
+ORDER BY distance_m;
+  mastr_unit_id  | expiry_year | expiry_status | distance_m 
+-----------------+-------------+---------------+------------
+ SEE900000000001 |        2026 | confirmed     |        446
+ SEE900000000015 |        2028 | confirmed     |        446
+ SEE900000000033 |        2026 | needs_review  |        446
+(3 rows)
+
+SELECT t.mastr_unit_id, t.last_seen_run_id
+FROM iris_staging.eeg_repowering_targets t
+WHERE t.last_seen_run_id <> (
+    SELECT run_id FROM iris_staging.eeg_ingestion_runs
+    WHERE status = 'succeeded' ORDER BY started_at DESC LIMIT 1
+);
+ mastr_unit_id | last_seen_run_id 
+---------------+------------------
+(0 rows)
+
+SELECT reason_code, count(*)
+FROM iris_staging.eeg_repowering_rejects
+WHERE run_id = (
+    SELECT run_id FROM iris_staging.eeg_ingestion_runs
+    WHERE status = 'succeeded' ORDER BY started_at DESC LIMIT 1
+)
+GROUP BY reason_code
+ORDER BY reason_code;
+     reason_code      | count 
+----------------------+-------
+ DUPLICATE_EXACT      |     1
+ DUPLICATE_SUPERSEDED |     2
+ INVALID_EEG_ID       |     1
+ INVALID_UNIT_ID      |     1
+ MISSING_UNIT_ID      |     1
+ NOT_SOLAR            |     1
+ REGION_UNKNOWN       |     1
+(7 rows)
+

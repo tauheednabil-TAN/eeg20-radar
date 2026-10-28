@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      db:
+        image: postgis/postgis:16-3.4
+        env:
+          POSTGRES_DB: iris_staging_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-admin
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d iris_staging_db"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      EEG20_TEST_DATABASE_URL: postgresql://eeg20_writer:ci-writer@localhost:55432/iris_staging_db
+      EEG20_TEST_ADMIN_URL: postgresql://postgres:ci-admin@localhost:55432/iris_staging_db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check . && ruff format --check .
+      - name: Create staging role and schema
+        run: bash docker/initdb/20_iris_staging.sh
+        env:
+          PGHOST: localhost
+          PGPORT: "55432"
+          PGPASSWORD: ci-admin
+          POSTGRES_USER: postgres
+          POSTGRES_DB: iris_staging_db
+          EEG20_DB_PASSWORD: ci-writer
+      - run: pytest -v
+      - name: Fixture run against staging
+        run: python -m eeg20_radar run --reference-date 2026-01-01 --output-dir output
+        env:
+          PYTHONPATH: src
+          DATABASE_URL: postgresql://eeg20_writer:ci-writer@localhost:55432/iris_staging_db
+      - name: Validation queries
+        run: psql -v ON_ERROR_STOP=1 -f sql/validation.sql
+        env:
+          PGHOST: localhost
+          PGPORT: "55432"
+          PGUSER: eeg20_writer
+          PGPASSWORD: ci-writer
+          PGDATABASE: iris_staging_db
+
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: cp .env.example .env
+      - run: docker compose --profile test run --rm tests
+      - run: docker compose run --rm radar
+      - run: docker compose down -v
