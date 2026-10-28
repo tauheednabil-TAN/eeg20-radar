@@ -1,6 +1,6 @@
 -- Validation queries for iris_staging.eeg_repowering_targets.
 -- Run as the staging writer, e.g.:
---   docker compose exec db psql -U postgres -d iris_staging_db -f /dev/stdin < sql/validation.sql
+--   docker compose exec -T db psql -U eeg20_writer -d iris_staging_db -f - < sql/validation.sql
 
 -- 1. Acceptance: no expiry date without an EEG commissioning date, and none on
 --    incomplete rows. Both counts must be 0.
@@ -57,3 +57,19 @@ WHERE run_id = (
 )
 GROUP BY reason_code
 ORDER BY reason_code;
+
+-- 8. Tender-size units (over 750 kW, commissioned from 2017) and whether an
+--    award number was found. Units without one carry TENDER_AWARD_UNVERIFIED.
+SELECT mastr_unit_id, eeg_commissioning_date,
+       coalesce(eeg_installed_power_kw, gross_power_kw) AS kw,
+       tender_award_number, expiry_status
+FROM iris_staging.eeg_repowering_targets
+WHERE eeg_commissioning_date >= DATE '2017-01-01'
+  AND coalesce(eeg_installed_power_kw, gross_power_kw) > 750
+ORDER BY mastr_unit_id;
+
+-- 9. Assessment history: how each unit's bucket changed between runs.
+SELECT h.mastr_unit_id, h.reference_date, h.expiry_year, h.expiry_bucket, h.is_repowering_candidate
+FROM iris_staging.eeg_repowering_target_history h
+ORDER BY h.mastr_unit_id, h.reference_date
+LIMIT 20;

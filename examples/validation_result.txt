@@ -23,9 +23,9 @@ GROUP BY expiry_status
 ORDER BY expiry_status;
  expiry_status | units | net_kw 
 ---------------+-------+--------
- confirmed     |    14 | 2139.4
+ confirmed     |    16 | 3649.2
  incomplete    |     6 |   58.8
- needs_review  |     9 | 5168.5
+ needs_review  |    10 | 7568.5
 (3 rows)
 
 SELECT expiry_year, municipality_key, municipality,
@@ -45,6 +45,7 @@ ORDER BY expiry_year, municipality_key;
         2026 | 05315000         | Köln         |     3 |   49.2
         2027 | 05112000         | Duisburg     |     1 |   99.9
         2027 | 05113000         | Essen        |     1 |    9.8
+        2027 | 05316000         | Leverkusen   |     1 |    9.8
         2028 | 05315000         | Köln         |     1 |   12.5
         2028 | 05316000         | Leverkusen   |     1 |    9.8
         2028 | 05515000         | Münster      |     1 |  749.5
@@ -52,7 +53,7 @@ ORDER BY expiry_year, municipality_key;
         2029 | 05913000         | Dortmund     |     2 |   19.6
         2030 | 05113000         | Essen        |     1 | 1250.0
         2030 | 05314000         | Bonn         |     1 |       
-(16 rows)
+(17 rows)
 
 SELECT mastr_unit_id, expiry_year, expiry_status,
        round(ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint(6.9583, 50.9413), 4326)::geography)) AS distance_m
@@ -96,4 +97,46 @@ ORDER BY reason_code;
  NOT_SOLAR            |     1
  REGION_UNKNOWN       |     1
 (7 rows)
+
+SELECT mastr_unit_id, eeg_commissioning_date,
+       coalesce(eeg_installed_power_kw, gross_power_kw) AS kw,
+       tender_award_number, expiry_status
+FROM iris_staging.eeg_repowering_targets
+WHERE eeg_commissioning_date >= DATE '2017-01-01'
+  AND coalesce(eeg_installed_power_kw, gross_power_kw) > 750
+ORDER BY mastr_unit_id;
+  mastr_unit_id  | eeg_commissioning_date |  kw  | tender_award_number | expiry_status 
+-----------------+------------------------+------+---------------------+---------------
+ SEE900000000025 | 2022-05-01             | 5000 |                     | needs_review
+ SEE900000000037 | 2018-08-01             | 2400 |                     | needs_review
+ SEE900000000038 | 2019-05-01             | 1500 | SOL19-1-012         | confirmed
+(3 rows)
+
+SELECT h.mastr_unit_id, h.reference_date, h.expiry_year, h.expiry_bucket, h.is_repowering_candidate
+FROM iris_staging.eeg_repowering_target_history h
+ORDER BY h.mastr_unit_id, h.reference_date
+LIMIT 20;
+  mastr_unit_id  | reference_date | expiry_year | expiry_bucket  | is_repowering_candidate 
+-----------------+----------------+-------------+----------------+-------------------------
+ SEE900000000001 | 2026-01-01     |        2026 | within_horizon | t
+ SEE900000000002 | 2026-01-01     |        2024 | expired        | t
+ SEE900000000003 | 2026-01-01     |        2020 | expired        | t
+ SEE900000000004 | 2026-01-01     |        2028 | within_horizon | t
+ SEE900000000005 | 2026-01-01     |        2032 | beyond_horizon | f
+ SEE900000000006 | 2026-01-01     |        2030 | within_horizon | t
+ SEE900000000007 | 2026-01-01     |             | unknown        | f
+ SEE900000000008 | 2026-01-01     |             | unknown        | f
+ SEE900000000009 | 2026-01-01     |             | unknown        | f
+ SEE900000000010 | 2026-01-01     |             | unknown        | f
+ SEE900000000011 | 2026-01-01     |        2029 | within_horizon | t
+ SEE900000000012 | 2026-01-01     |        2025 | expired        | f
+ SEE900000000013 | 2026-01-01     |        2027 | within_horizon | t
+ SEE900000000014 | 2026-01-01     |             | unknown        | f
+ SEE900000000015 | 2026-01-01     |        2028 | within_horizon | t
+ SEE900000000016 | 2026-01-01     |        2026 | within_horizon | t
+ SEE900000000020 | 2026-01-01     |        2023 | expired        | t
+ SEE900000000021 | 2026-01-01     |        2026 | within_horizon | t
+ SEE900000000025 | 2026-01-01     |        2042 | beyond_horizon | f
+ SEE900000000026 | 2026-01-01     |             | unknown        | f
+(20 rows)
 

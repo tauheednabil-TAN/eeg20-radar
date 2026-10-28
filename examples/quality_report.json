@@ -1,127 +1,151 @@
 {
-  "run_id": "20261028T214223Z-4bf8d7d2",
-  "rule_version": "eeg-term-v1",
+  "run_id": "20261028T223801Z-93bf68bd",
+  "rule_version": "eeg-term-v2",
   "scope": "NW",
   "reference_date": "2026-01-01",
   "horizon_years": 5,
-  "result_digest": "9320195fb00bb2d6692cc8b8303b3566ba593719703d2cc7e6fbdcb3e0916008",
+  "result_digest": "e4b355355170f2f19f7421120a5efb4aa54c33fbb2ff02a8ced57756abde3d19",
   "sources": [
     {
       "kind": "unit",
       "file": "EinheitenSolar_1.xml",
-      "sha256": "31a640310680565bad531771f7a81b8285d6a044d94a4649a402c9b102b7bbbd",
-      "size_bytes": 32376
+      "sha256": "84c01df456dbf9fd053b6e5357238e952aee5a92418ff184117fb628c91e7055",
+      "size_bytes": 35138
     },
     {
       "kind": "eeg",
       "file": "AnlagenEegSolar_1.xml",
-      "sha256": "cf182d2266c817638bd6b18d529427eedc3c3ba016ddf342c6597905f2e24eb7",
-      "size_bytes": 12670
+      "sha256": "5be1bcad64afbfc504615cad325eb58e5505d98d0932e24b9216f1cfa3f0899c",
+      "size_bytes": 14103
     }
   ],
   "counts": {
-    "units_read": 37,
-    "eeg_records_read": 31,
-    "units_unique": 33,
-    "eeg_records_unique": 29,
+    "units_read": 40,
+    "eeg_records_read": 34,
     "units_out_of_scope": 2,
-    "units_staged": 29,
-    "eeg_records_unreferenced_in_scope": 4,
+    "units_unique_in_scope": 32,
+    "units_staged": 32,
+    "eeg_records_linked": 28,
+    "eeg_records_not_linked": 4,
     "rejected": 8
   },
   "staged_by_status": {
-    "confirmed": 14,
+    "confirmed": 16,
     "incomplete": 6,
-    "needs_review": 9
+    "needs_review": 10
   },
-  "coverage_confirmed_pct": 48.3,
-  "coverage_with_expiry_pct": 79.3,
+  "coverage_confirmed_pct": 50.0,
+  "coverage_with_expiry_pct": 81.2,
   "staged_by_bucket": {
-    "beyond_horizon": 2,
+    "beyond_horizon": 4,
     "expired": 7,
     "unknown": 6,
-    "within_horizon": 14
+    "within_horizon": 15
   },
   "spatial_precision": {
-    "point": 27,
+    "point": 30,
     "postcode": 2
   },
   "flags": {
     "COORDINATES_INVALID": {
       "count": 1,
-      "severity": "info"
+      "severity": "info",
+      "example_unit": "SEE900000000020"
     },
     "COORDINATES_OUTSIDE_REGION_BBOX": {
       "count": 1,
-      "severity": "review"
+      "severity": "review",
+      "example_unit": "SEE900000000021"
     },
     "DATE_MISMATCH_UNIT_VS_EEG": {
       "count": 1,
-      "severity": "review"
+      "severity": "review",
+      "example_unit": "SEE900000000011"
     },
     "EEG2021_TERM_RULE_UNVERIFIED": {
       "count": 1,
-      "severity": "review"
+      "severity": "review",
+      "example_unit": "SEE900000000025"
     },
     "EEG_DATE_INVALID": {
       "count": 1,
-      "severity": "blocking"
+      "severity": "blocking",
+      "example_unit": "SEE900000000010"
     },
     "EEG_DATE_IN_FUTURE": {
       "count": 1,
-      "severity": "blocking"
+      "severity": "blocking",
+      "example_unit": "SEE900000000026"
     },
     "EEG_DATE_MISSING": {
       "count": 1,
-      "severity": "blocking"
+      "severity": "blocking",
+      "example_unit": "SEE900000000009"
     },
     "EEG_LINK_INCONSISTENT": {
       "count": 1,
-      "severity": "review"
+      "severity": "review",
+      "example_unit": "SEE900000000035"
     },
     "EEG_RECORD_NOT_FOUND": {
       "count": 1,
-      "severity": "blocking"
+      "severity": "blocking",
+      "example_unit": "SEE900000000008"
     },
     "IMPLAUSIBLE_EARLY_DATE": {
       "count": 1,
-      "severity": "review"
+      "severity": "review",
+      "example_unit": "SEE900000000031"
     },
     "NOT_GRID_OPERATOR_VERIFIED": {
       "count": 1,
-      "severity": "review"
+      "severity": "review",
+      "example_unit": "SEE900000000029"
     },
     "NO_EEG_LINK": {
       "count": 2,
-      "severity": "blocking"
+      "severity": "blocking",
+      "example_unit": "SEE900000000007"
     },
     "POWER_INVALID": {
       "count": 1,
-      "severity": "info"
+      "severity": "info",
+      "example_unit": "SEE900000000030"
     },
     "PRE_EEG2000_DEEMED_2000": {
       "count": 2,
-      "severity": "info"
+      "severity": "info",
+      "example_unit": "SEE900000000003"
     },
     "REGION_CONFLICT": {
       "count": 1,
-      "severity": "review"
+      "severity": "review",
+      "example_unit": "SEE900000000033"
     },
     "SHARED_EEG_ANLAGE": {
       "count": 2,
-      "severity": "info"
+      "severity": "info",
+      "example_unit": "SEE900000000027"
+    },
+    "TENDER_AWARD_UNVERIFIED": {
+      "count": 2,
+      "severity": "review",
+      "example_unit": "SEE900000000025"
     },
     "UNIT_NOT_COMMISSIONED": {
       "count": 1,
-      "severity": "blocking"
+      "severity": "blocking",
+      "example_unit": "SEE900000000014"
     },
     "UNIT_PERMANENTLY_DECOMMISSIONED": {
       "count": 1,
-      "severity": "review"
+      "severity": "review",
+      "example_unit": "SEE900000000012"
     },
     "UNIT_TEMPORARILY_DECOMMISSIONED": {
       "count": 1,
-      "severity": "review"
+      "severity": "review",
+      "example_unit": "SEE900000000013"
     }
   },
   "rejects_by_reason": {
@@ -133,7 +157,7 @@
     "NOT_SOLAR": 1,
     "REGION_UNKNOWN": 1
   },
-  "rejects": [
+  "rejects_sample": [
     {
       "source": "AnlagenEegSolar_1.xml#27",
       "record_id": "EEG900000000034",
@@ -183,27 +207,31 @@
       "detail": "no usable Gemeindeschluessel or Bundesland"
     }
   ],
+  "rejects_sample_truncated": false,
   "repowering_candidates": {
-    "count": 20,
-    "net_power_kw": 2288.3,
+    "count": 21,
+    "net_power_kw": 2298.1,
     "by_expiry_year": {
       "2020": 2,
       "2023": 1,
       "2024": 2,
       "2025": 1,
       "2026": 4,
-      "2027": 2,
+      "2027": 3,
       "2028": 3,
       "2029": 3,
       "2030": 2
     }
   },
   "acceptance_checks": {
-    "incomplete_rows_with_expiry": [],
-    "expiry_without_eeg_date": [],
+    "incomplete_rows_with_expiry": 0,
+    "incomplete_rows_with_expiry_ids": [],
+    "expiry_without_eeg_date": 0,
+    "expiry_without_eeg_date_ids": [],
     "passed": true
   },
   "database": {
-    "rows_not_seen_this_run": 0
+    "rows_not_seen_this_run": 0,
+    "history_rows_written": 32
   }
 }

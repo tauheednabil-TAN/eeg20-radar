@@ -4,58 +4,59 @@ Indicative screening only. Not legal advice or a permit decision.
 
 | Item | Value |
 |---|---|
-| Run | `20261028T214223Z-4bf8d7d2` |
+| Run | `20261028T223801Z-93bf68bd` |
 | Scope | NW (Nordrhein-Westfalen) |
 | Reference date | 2026-01-01 |
 | Horizon | 5 years |
-| Rule version | eeg-term-v1 |
-| Result digest (sha256) | `9320195fb00bb2d6…` |
+| Rule version | eeg-term-v2 |
+| Result digest (sha256) | `e4b355355170f2f1…` |
 
 ## Sources
 
 | Kind | File | sha256 | Bytes |
 |---|---|---|---|
-| unit | EinheitenSolar_1.xml | `31a640310680…` | 32376 |
-| eeg | AnlagenEegSolar_1.xml | `cf182d2266c8…` | 12670 |
+| unit | EinheitenSolar_1.xml | `84c01df456db…` | 35138 |
+| eeg | AnlagenEegSolar_1.xml | `5be1bcad64af…` | 14103 |
 
 ## Record flow
 
 | Step | Records |
 |---|---|
-| Unit records read | 37 |
-| EEG records read | 31 |
-| Unique valid units | 33 |
+| Unit records read | 40 |
+| EEG records read | 34 |
 | Out of scope (other region) | 2 |
+| Unique valid units in scope | 32 |
 | Rejected (all reasons) | 8 |
-| Staged in `iris_staging.eeg_repowering_targets` | 29 |
-| EEG records not linked to a staged unit | 4 |
+| Staged in `iris_staging.eeg_repowering_targets` | 32 |
+| EEG records linked to a staged unit | 28 |
+| EEG records not linked to any in-scope unit | 4 |
 
 ## Coverage
 
 | Expiry status | Rows |
 |---|---|
-| confirmed | 14 |
+| confirmed | 16 |
 | incomplete | 6 |
-| needs_review | 9 |
+| needs_review | 10 |
 
-- Rows with a derived expiry year: 79.3%
-- Rows confirmed without review flags: 48.3%
+- Rows with a derived expiry year: 81.2%
+- Rows confirmed without review flags: 50.0%
 
 | Expiry bucket | Rows |
 |---|---|
-| beyond_horizon | 2 |
+| beyond_horizon | 4 |
 | expired | 7 |
 | unknown | 6 |
-| within_horizon | 14 |
+| within_horizon | 15 |
 
 | Spatial precision | Rows |
 |---|---|
-| point | 27 |
+| point | 30 |
 | postcode | 2 |
 
 ## Repowering candidates
 
-20 units, 2288.3 kW net (operating or temporarily shut down, expiry known, expired or within horizon).
+21 units, 2298.1 kW net (operating or temporarily shut down, expiry known, expired or within horizon).
 
 | Expiry year | Units |
 |---|---|
@@ -64,7 +65,7 @@ Indicative screening only. Not legal advice or a permit decision.
 | 2024 | 2 |
 | 2025 | 1 |
 | 2026 | 4 |
-| 2027 | 2 |
+| 2027 | 3 |
 | 2028 | 3 |
 | 2029 | 3 |
 | 2030 | 2 |
@@ -89,6 +90,7 @@ Indicative screening only. Not legal advice or a permit decision.
 | `PRE_EEG2000_DEEMED_2000` | info | 2 | SEE900000000003 |
 | `REGION_CONFLICT` | review | 1 | SEE900000000033 |
 | `SHARED_EEG_ANLAGE` | info | 2 | SEE900000000027 |
+| `TENDER_AWARD_UNVERIFIED` | review | 2 | SEE900000000025 |
 | `UNIT_NOT_COMMISSIONED` | blocking | 1 | SEE900000000014 |
 | `UNIT_PERMANENTLY_DECOMMISSIONED` | review | 1 | SEE900000000012 |
 | `UNIT_TEMPORARILY_DECOMMISSIONED` | review | 1 | SEE900000000013 |
@@ -96,6 +98,18 @@ Indicative screening only. Not legal advice or a permit decision.
 `blocking` = no expiry derived (`incomplete`); `review` = expiry derived but needs a human check; `info` = noted only.
 
 ## Rejected records
+
+| Reason | Records |
+|---|---|
+| `DUPLICATE_EXACT` | 1 |
+| `DUPLICATE_SUPERSEDED` | 2 |
+| `INVALID_EEG_ID` | 1 |
+| `INVALID_UNIT_ID` | 1 |
+| `MISSING_UNIT_ID` | 1 |
+| `NOT_SOLAR` | 1 |
+| `REGION_UNKNOWN` | 1 |
+
+All rejected records:
 
 | Source | Record | Reason | Detail |
 |---|---|---|---|
@@ -118,3 +132,4 @@ Indicative screening only. Not legal advice or a permit decision.
 ## Database
 
 - Rows already staged but not present in this run (kept, not deleted): 0
+- Assessments recorded in `eeg_repowering_target_history` for this run: 32

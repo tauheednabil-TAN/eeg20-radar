@@ -18,12 +18,16 @@ instead of being presented as confirmed.
 from dataclasses import dataclass
 from datetime import date
 
-RULE_VERSION = "eeg-term-v1"
+RULE_VERSION = "eeg-term-v2"
 
 TERM_YEARS = 20
 EEG2000_EFFECTIVE = date(2000, 4, 1)
 DEEMED_YEAR_FOR_OLD_PLANTS = 2000
 EEG2021_EFFECTIVE = date(2021, 1, 1)
+# EEG 2017 s.22: solar installations above 750 kW commissioned from 2017
+# receive payments only with a tender award (Zuschlag).
+TENDER_REGIME_START = date(2017, 1, 1)
+TENDER_THRESHOLD_KW = 750.0
 # Stromeinspeisungsgesetz took effect 1 January 1991. Earlier EEG dates are
 # possible for very old plants but unusual enough to review.
 PLAUSIBLE_EARLIEST = date(1991, 1, 1)
@@ -58,6 +62,14 @@ def compute_expiry(eeg_commissioning_date: date) -> Expiry:
         expiry_year=end_year,
         notes=tuple(notes),
         needs_review=tuple(review),
+    )
+
+
+def needs_tender_award(eeg_commissioning_date: date, installed_kw: float | None) -> bool:
+    return (
+        eeg_commissioning_date >= TENDER_REGIME_START
+        and installed_kw is not None
+        and installed_kw > TENDER_THRESHOLD_KW
     )
 
 

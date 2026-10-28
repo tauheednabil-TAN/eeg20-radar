@@ -8,9 +8,9 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from eeg20_radar.config import load_settings
-from eeg20_radar.pipeline import RunConfig, normalize_scope, run_pipeline
-from eeg20_radar.report import build_report, write_outputs
-from eeg20_radar.source import SourceError
+from eeg20_radar.pipeline import RunConfig, normalize_scope, screen
+from eeg20_radar.report import OutputFiles, ReportBuilder
+from eeg20_radar.source import SourceError, discover
 
 LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s [source=%(source)s record=%(record)s] %(message)s"
 
@@ -81,15 +81,16 @@ def main(argv: list[str] | None = None) -> int:
         horizon_years=args.horizon_years,
     )
 
+    run_id = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
+
     try:
-        result = run_pipeline(cfg, logger)
+        sources = discover(cfg.source_dir)
     except SourceError as exc:
         logger.error("Run aborted, nothing staged: %s", exc)
         return 1
 
-    run_id = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}-{uuid.uuid4().hex[:8]}"
-
-    db_info = None
+    writer = None
+    conn = None
     if not args.no_db:
         from eeg20_radar import db  # imported here so --no-db runs need no driver
 
@@ -97,12 +98,45 @@ def main(argv: list[str] | None = None) -> int:
             logger.error("DATABASE_URL is not set (use --no-db for a file-only run)")
             return 2
         db.assert_staging_target(settings.target_schema)
-        with db.connect(settings.database_url, settings.target_schema) as conn:
-            db.apply_schema(conn)
-            db_info = db.write_result(conn, result, run_id, logger)
+        conn = db.connect(settings.database_url, settings.target_schema)
+        db.apply_schema(conn)
+        writer = db.StagingWriter(conn, run_id, cfg, sources[0] + sources[1], logger)
+        writer.start()
 
-    report = build_report(result, run_id, db_info)
-    paths = write_outputs(report, result, args.output_dir)
+    builder = ReportBuilder()
+    outputs = OutputFiles(args.output_dir)
+
+    def on_target(row: dict) -> None:
+        builder.add_target(row)
+        outputs.add_target(row)
+        if writer:
+            writer.add_target(row)
+
+    def on_reject(reject) -> None:
+        builder.add_reject(reject)
+        outputs.add_reject(reject)
+        if writer:
+            writer.add_reject(reject)
+
+    try:
+        summary = screen(cfg, logger, on_target, on_reject, sources)
+        db_info = writer.finish(summary.stats, summary.digest) if writer else None
+    except Exception as exc:
+        outputs.abort()
+        if writer:
+            writer.fail(exc)
+        if isinstance(exc, SourceError):
+            logger.error("Run aborted, nothing staged: %s", exc)
+            return 1
+        raise
+    finally:
+        if conn is not None:
+            conn.close()
+
+    report = builder.build(
+        cfg, summary.unit_sources + summary.eeg_sources, summary.stats, summary.digest, run_id, db_info
+    )
+    paths = outputs.finish(report)
     for name, path in paths.items():
         logger.info("Wrote %s: %s", name, path)
 

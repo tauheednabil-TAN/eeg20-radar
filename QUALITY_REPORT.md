@@ -6,14 +6,14 @@ Run: fixture data, scope NRW, reference date 2026-01-01, horizon 5 years. The ge
 
 | | Records |
 |---|---|
-| Unit records read | 37 |
-| EEG records read | 31 |
-| Staged | 29 (14 confirmed, 9 needs review, 6 incomplete) |
+| Unit records read | 40 |
+| EEG records read | 34 |
+| Staged | 32 (16 confirmed, 10 needs review, 6 incomplete) |
 | Rejected | 8 |
 | Out of scope (Bavaria, Berlin) | 2 |
-| Repowering candidates | 20 |
+| Repowering candidates | 21 |
 
-79% of staged rows have an expiry year (confirmed or needs review). The other 21% have none, because their records don't support one.
+81% of staged rows have an expiry year (confirmed or needs review). The other 19% have none, because their records don't support one.
 
 ## Edge cases and outcomes
 
@@ -49,6 +49,9 @@ Each fixture unit `SEE9000000000nn` covers one case. Unit numbers are the last t
 | 33 | Municipality key says NRW, `Bundesland` says Bavaria | needs review | 2026 | yes | `REGION_CONFLICT` |
 | 34 | Two EEG record versions; newer date kept | confirmed | 2024 | yes | older EEG copy rejected |
 | 35 | EEG record lists a different unit | needs review | 2028 | yes | `EEG_LINK_INCONSISTENT` |
+| 37 | 2.4 MW, commissioned 2018, no tender award number | needs review | 2038 | no (beyond horizon) | `TENDER_AWARD_UNVERIFIED` |
+| 38 | 1.5 MW, commissioned 2019, award `SOL19-1-012` | confirmed | 2039 | no (beyond horizon) | |
+| 39 | Field names spelled `EinheitMaStRNummer` and `VerknuepfteEinheitenMastrNummern` | confirmed | 2027 | yes | |
 
 ## Rejected data
 
@@ -71,15 +74,16 @@ Every reject is stored with its file, position, reason and raw record in `iris_s
 - All 6 incomplete rows have `expiry_year` and `remuneration_end_date` set to `NULL` (validation query 1 returns `0 | 0`).
 - Unit 09 has a unit commissioning date but no EEG date. The tool does not fall back to the unit date; `test_no_expiry_is_ever_taken_from_the_unit_date` checks this.
 - The `eeg_targets_no_invented_expiry` check constraint rejects such a row at the database level; `test_database_rejects_invented_expiry` shows the whole run rolls back.
-- Eligibility doubts (shutdown, unverified registration, region conflict, EEG 2021 rule) produce a `needs_review` status with the reason in `flag_details`.
+- Eligibility doubts (shutdown, unverified registration, region conflict, EEG 2021 rule, tender-size plant without an award) produce a `needs_review` status with the reason in `flag_details`.
 
 **The method is deterministic and auditable.**
-- Two runs on the same files and reference date give identical rows and the same sha256 digest (`test_runs_are_deterministic`; digest `9320195f…` in the example run).
+- Two runs on the same files and reference date give identical rows and the same sha256 digest (`test_runs_are_deterministic`; digest `e4b35535…` in the example run).
 - Validation query 2 recomputes every end date in SQL, independently of the Python code, and finds 0 differences.
-- Each row stores its raw source record, record hash, file position, rule version and reference date. Each run stores the sha256 of its input files.
+- Each row stores its raw source record, record hash, file position, rule version and reference date. Each run stores the sha256 of its input files, and `eeg_repowering_target_history` keeps every run's assessment.
 
 **Staging only.**
-- The run refuses any target schema other than `iris_staging`, and refuses superuser roles and roles that can create objects in `iris_core` (`test_guard_and_cli.py`, `test_db.py`).
+- The run refuses any target schema other than `iris_staging`. It also refuses superuser roles and roles that can create objects in `iris_core` or modify its tables (`test_guard_and_cli.py`, `test_db.py`).
+- A run that fails part-way, for example on a truncated EEG file after rejects were already sent to the writer, leaves no rows, no rejects and no output files, and its run record says `failed` (`test_cli_failure_mid_run_stages_nothing`).
 
 ## Not covered by this report
 

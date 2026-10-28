@@ -5,19 +5,19 @@ from datetime import date
 import pytest
 
 from conftest import FIXTURES, unit
-from eeg20_radar.pipeline import normalize_scope, run_pipeline
-from eeg20_radar.source import SourceError
+from eeg20_radar.pipeline import normalize_scope, run_pipeline, screen
+from eeg20_radar.source import SourceError, SourceRecord
 
 
 def test_fixture_record_flow(fixture_result):
     assert fixture_result.stats == {
-        "units_read": 37,
-        "eeg_records_read": 31,
-        "units_unique": 33,
-        "eeg_records_unique": 29,
+        "units_read": 40,
+        "eeg_records_read": 34,
         "units_out_of_scope": 2,
-        "units_staged": 29,
-        "eeg_records_unreferenced_in_scope": 4,
+        "units_unique_in_scope": 32,
+        "units_staged": 32,
+        "eeg_records_linked": 28,
+        "eeg_records_not_linked": 4,
         "rejected": 8,
     }
 
@@ -89,6 +89,7 @@ def test_no_expiry_is_ever_taken_from_the_unit_date(rows):
         (31, "IMPLAUSIBLE_EARLY_DATE"),
         (33, "REGION_CONFLICT"),
         (35, "EEG_LINK_INCONSISTENT"),
+        (37, "TENDER_AWARD_UNVERIFIED"),
     ],
 )
 def test_eligibility_uncertainty_is_flagged_for_review(rows, n, flag):
@@ -142,7 +143,8 @@ def test_pre_eeg2000(rows):
 
 def test_raw_source_is_kept_for_every_row(rows):
     for row in rows.values():
-        assert row["raw_unit"]["EinheitMastrNummer"] == row["mastr_unit_id"]
+        raw_ids = {v for k, v in row["raw_unit"].items() if k.lower() == "einheitmastrnummer"}
+        assert raw_ids == {row["mastr_unit_id"]}
         assert len(row["unit_record_hash"]) == 64
 
 
@@ -203,3 +205,72 @@ def test_missing_source_files(tmp_path, make_config, logger):
         run_pipeline(make_config(source_dir=tmp_path), logger)
     with pytest.raises(SourceError, match="not found"):
         run_pipeline(make_config(source_dir=tmp_path / "nope"), logger)
+
+
+def test_tender_award_present_is_confirmed(rows):
+    row = rows[unit(38)]
+    assert row["expiry_status"] == "confirmed"
+    assert row["tender_award_number"] == "SOL19-1-012"
+    assert row["eeg_installed_power_kw"] == 1500.0
+
+
+def test_tender_check_uses_eeg_installed_power(rows):
+    row = rows[unit(37)]
+    assert row["eeg_installed_power_kw"] == 2400.0
+    assert "2400.0 kW" in row["flag_details"]["TENDER_AWARD_UNVERIFIED"]
+
+
+def test_alternative_field_spellings_are_read(rows):
+    # Unit 39 uses <EinheitMaStRNummer>, its EEG record <VerknuepfteEinheitenMastrNummern>.
+    row = rows[unit(39)]
+    assert row["expiry_status"] == "confirmed"
+    assert "EEG_LINK_INCONSISTENT" not in row["flags"]
+
+
+def test_field_lookup_ignores_case_only_on_a_miss():
+    rec = SourceRecord("f.xml", 1, {"EinheitMaStRNummer": "SEE1", "Ort": "Köln"})
+    assert rec.get("EinheitMastrNummer") == "SEE1"
+    assert rec.get("Ort") == "Köln"
+    assert rec.get("Gemeinde") is None
+
+
+def test_screen_streams_the_same_rows(make_config, logger, fixture_result):
+    rows, rejects = [], []
+    summary = screen(make_config(), logger, rows.append, rejects.append)
+    assert rows == fixture_result.targets
+    assert summary.digest == fixture_result.digest
+    assert summary.stats == fixture_result.stats
+
+
+def test_rows_come_out_in_source_order(fixture_result):
+    positions = [int(r["source_unit_file"].split("#")[1]) for r in fixture_result.targets]
+    assert positions == sorted(positions)
+
+
+def test_reader_memory_stays_flat(tmp_path, logger):
+    import tracemalloc
+
+    from eeg20_radar.source import SourceFile, iter_records
+
+    record = (FIXTURES / "EinheitenSolar_1.xml").read_text(encoding="utf-8").split("<EinheitSolar>")[1]
+    body = "".join(
+        "<EinheitSolar>" + record.split("</EinheitSolar>")[0] + "</EinheitSolar>" for _ in range(20_000)
+    )
+    path = tmp_path / "EinheitenSolar_1.xml"
+    path.write_text(f"<EinheitenSolar>{body}</EinheitenSolar>", encoding="utf-8")
+    source = SourceFile("unit", path, "", path.stat().st_size)
+
+    tracemalloc.start()
+    count = sum(1 for _ in iter_records(source, "EinheitSolar", logger))
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert count == 20_000
+    # A 20,000-record file is about 18 MB; the reader must not hold it.
+    assert peak < 2_000_000, f"peak {peak} bytes"
+
+
+def test_out_of_scope_units_are_not_kept(make_config, logger):
+    rows = []
+    summary = screen(make_config(scope="BE"), logger, rows.append, lambda r: None)
+    assert [r["mastr_unit_id"] for r in rows] == [unit(24)]
+    assert summary.stats["units_unique_in_scope"] == 1

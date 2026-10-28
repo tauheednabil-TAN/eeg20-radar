@@ -22,6 +22,11 @@ UNIT_STATUS = {
 # the registration.
 GRID_OPERATOR_VERIFIED_CODES = frozenset({"2954"})
 
+# Fields that may hold the tender award number on an EEG record. The export
+# documentation names it Zuschlagsnummer; the second spelling is accepted in
+# case a release drops the linking "s".
+TENDER_AWARD_FIELDS = ("Zuschlagsnummer", "Zuschlagnummer")
+
 # MaStR "Bundesland" catalogue code -> 2-digit state prefix of the
 # Amtlicher Gemeindeschluessel (AGS).
 BUNDESLAND_CODE_TO_AGS = {

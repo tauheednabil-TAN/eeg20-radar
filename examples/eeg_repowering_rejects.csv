@@ -1,0 +1,9 @@
+source_file,record_index,record_id,reason_code,detail
+EinheitenSolar_1.xml,19,,MISSING_UNIT_ID,EinheitMastrNummer is empty
+EinheitenSolar_1.xml,20,SEE12,INVALID_UNIT_ID,unexpected format 'SEE12'
+EinheitenSolar_1.xml,21,SEE900000000019,NOT_SOLAR,Energietraeger 2497
+EinheitenSolar_1.xml,24,SEE900000000022,REGION_UNKNOWN,no usable Gemeindeschluessel or Bundesland
+AnlagenEegSolar_1.xml,31,EEG-BROKEN,INVALID_EEG_ID,unexpected format 'EEG-BROKEN'
+AnlagenEegSolar_1.xml,27,EEG900000000034,DUPLICATE_SUPERSEDED,superseded by AnlagenEegSolar_1.xml#28
+EinheitenSolar_1.xml,15,SEE900000000015,DUPLICATE_SUPERSEDED,superseded by EinheitenSolar_1.xml#16
+EinheitenSolar_1.xml,18,SEE900000000016,DUPLICATE_EXACT,identical copy

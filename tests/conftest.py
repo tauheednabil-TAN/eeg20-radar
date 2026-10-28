@@ -61,6 +61,7 @@ def staging_conn():
     with conn.cursor() as cur:
         cur.execute(
             "TRUNCATE iris_staging.eeg_repowering_rejects, "
+            "iris_staging.eeg_repowering_target_history, "
             "iris_staging.eeg_repowering_targets, "
             "iris_staging.eeg_ingestion_runs"
         )

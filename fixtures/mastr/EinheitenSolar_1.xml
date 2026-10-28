@@ -703,4 +703,61 @@
     <EegMaStRNummer>EEG900000000035</EegMaStRNummer>
     <NetzbetreiberpruefungStatus>2954</NetzbetreiberpruefungStatus>
   </EinheitSolar>
+  <EinheitSolar>
+    <EinheitMastrNummer>SEE900000000037</EinheitMastrNummer>
+    <DatumLetzteAktualisierung>2024-03-01T09:00:00.1234567</DatumLetzteAktualisierung>
+    <NameStromerzeugungseinheit>Solarpark Leverkusen 37 (tender size, no award)</NameStromerzeugungseinheit>
+    <Energietraeger>2495</Energietraeger>
+    <EinheitBetriebsstatus>35</EinheitBetriebsstatus>
+    <Inbetriebnahmedatum>2018-08-01</Inbetriebnahmedatum>
+    <Bundesland>1409</Bundesland>
+    <Gemeindeschluessel>05316000</Gemeindeschluessel>
+    <Gemeinde>Leverkusen</Gemeinde>
+    <Postleitzahl>51373</Postleitzahl>
+    <Ort>Leverkusen</Ort>
+    <Breitengrad>51.04590</Breitengrad>
+    <Laengengrad>6.98440</Laengengrad>
+    <Bruttoleistung>2400</Bruttoleistung>
+    <Nettonennleistung>2400</Nettonennleistung>
+    <EegMaStRNummer>EEG900000000037</EegMaStRNummer>
+    <NetzbetreiberpruefungStatus>2954</NetzbetreiberpruefungStatus>
+  </EinheitSolar>
+  <EinheitSolar>
+    <EinheitMastrNummer>SEE900000000038</EinheitMastrNummer>
+    <DatumLetzteAktualisierung>2024-03-01T09:00:00.1234567</DatumLetzteAktualisierung>
+    <NameStromerzeugungseinheit>Solarpark Leverkusen 38 (tender award)</NameStromerzeugungseinheit>
+    <Energietraeger>2495</Energietraeger>
+    <EinheitBetriebsstatus>35</EinheitBetriebsstatus>
+    <Inbetriebnahmedatum>2019-05-01</Inbetriebnahmedatum>
+    <Bundesland>1409</Bundesland>
+    <Gemeindeschluessel>05316000</Gemeindeschluessel>
+    <Gemeinde>Leverkusen</Gemeinde>
+    <Postleitzahl>51373</Postleitzahl>
+    <Ort>Leverkusen</Ort>
+    <Breitengrad>51.04590</Breitengrad>
+    <Laengengrad>6.98440</Laengengrad>
+    <Bruttoleistung>1500</Bruttoleistung>
+    <Nettonennleistung>1500</Nettonennleistung>
+    <EegMaStRNummer>EEG900000000038</EegMaStRNummer>
+    <NetzbetreiberpruefungStatus>2954</NetzbetreiberpruefungStatus>
+  </EinheitSolar>
+  <EinheitSolar>
+    <EinheitMaStRNummer>SEE900000000039</EinheitMaStRNummer>
+    <DatumLetzteAktualisierung>2024-03-01T09:00:00.1234567</DatumLetzteAktualisierung>
+    <NameStromerzeugungseinheit>PV Leverkusen 39 (alternative field spelling)</NameStromerzeugungseinheit>
+    <Energietraeger>2495</Energietraeger>
+    <EinheitBetriebsstatus>35</EinheitBetriebsstatus>
+    <Inbetriebnahmedatum>2007-03-03</Inbetriebnahmedatum>
+    <Bundesland>1409</Bundesland>
+    <Gemeindeschluessel>05316000</Gemeindeschluessel>
+    <Gemeinde>Leverkusen</Gemeinde>
+    <Postleitzahl>51373</Postleitzahl>
+    <Ort>Leverkusen</Ort>
+    <Breitengrad>51.04590</Breitengrad>
+    <Laengengrad>6.98440</Laengengrad>
+    <Bruttoleistung>9.8</Bruttoleistung>
+    <Nettonennleistung>9.8</Nettonennleistung>
+    <EegMaStRNummer>EEG900000000039</EegMaStRNummer>
+    <NetzbetreiberpruefungStatus>2954</NetzbetreiberpruefungStatus>
+  </EinheitSolar>
 </EinheitenSolar>

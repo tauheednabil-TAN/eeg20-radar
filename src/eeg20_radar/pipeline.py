@@ -1,13 +1,22 @@
 """
-Screening pipeline: read -> validate -> de-duplicate -> scope -> derive.
+Screening pipeline: read -> validate -> scope -> de-duplicate -> derive.
 
-Pure (no database access) so the same inputs always give the same rows.
+The pipeline makes three streaming passes so memory grows with the number
+of in-scope units, not with the size of the export:
+
+1. Unit files: validate IDs, drop other regions, and remember only a small
+   index entry per unit (best duplicate position, its hash, its EEG link).
+2. EEG files: keep only the records linked to an in-scope unit.
+3. Unit files again: build each staged row and hand it to the caller.
+
+The pipeline never touches the database, so equal inputs always give equal rows.
 """
 
 import hashlib
 import json
 import logging
-from collections import Counter, defaultdict
+from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
@@ -26,7 +35,12 @@ from eeg20_radar.normalize import (
     parse_timestamp,
     split_ids,
 )
-from eeg20_radar.rules import RULE_VERSION, compute_expiry, expiry_bucket
+from eeg20_radar.rules import (
+    RULE_VERSION,
+    compute_expiry,
+    expiry_bucket,
+    needs_tender_award,
+)
 from eeg20_radar.source import (
     EEG_TAG,
     UNIT_TAG,
@@ -59,6 +73,7 @@ FLAG_SEVERITY = {
     "COORDINATES_OUTSIDE_REGION_BBOX": REVIEW,
     "IMPLAUSIBLE_EARLY_DATE": REVIEW,
     "EEG2021_TERM_RULE_UNVERIFIED": REVIEW,
+    "TENDER_AWARD_UNVERIFIED": REVIEW,
     "PRE_EEG2000_DEEMED_2000": INFO,
     "SHARED_EEG_ANLAGE": INFO,
     "COORDINATES_INVALID": INFO,
@@ -87,8 +102,36 @@ class Reject:
     raw: dict
 
 
+def row_json(row: dict) -> str:
+    return json.dumps(row, sort_keys=True, default=str)
+
+
+class RowDigest:
+    """sha256 over the staged rows in output order."""
+
+    def __init__(self) -> None:
+        self._h = hashlib.sha256()
+
+    def update(self, row: dict) -> None:
+        self._h.update(row_json(row).encode())
+        self._h.update(b"\n")
+
+    def hexdigest(self) -> str:
+        return self._h.hexdigest()
+
+
+@dataclass
+class Summary:
+    unit_sources: list[SourceFile]
+    eeg_sources: list[SourceFile]
+    stats: dict
+    digest: str
+
+
 @dataclass
 class PipelineResult:
+    """All rows in memory. Meant for tests and small inputs; the CLI streams."""
+
     config: RunConfig
     unit_sources: list[SourceFile]
     eeg_sources: list[SourceFile]
@@ -98,9 +141,10 @@ class PipelineResult:
 
     @property
     def digest(self) -> str:
-        """Hash of the staged rows; equal inputs must give an equal digest."""
-        payload = json.dumps(self.targets, sort_keys=True, default=str)
-        return hashlib.sha256(payload.encode()).hexdigest()
+        digest = RowDigest()
+        for row in self.targets:
+            digest.update(row)
+        return digest.hexdigest()
 
 
 def normalize_scope(scope: str) -> str:
@@ -134,321 +178,418 @@ class _Flags:
         return sorted(self.items)
 
 
-def _dedupe(
-    records: list[SourceRecord],
-    id_field: str,
-    rejects: list[Reject],
-    logger: logging.Logger,
-) -> tuple[dict[str, SourceRecord], set[str]]:
+@dataclass(slots=True)
+class _Best:
+    """The current winner among copies of one ID, plus what decides it."""
+
+    ts_key: float  # negative timestamp, so smaller sorts first; inf if missing
+    position: tuple[str, int]
+    digest: str
+    eeg_id: str | None = None
+    copies: int = 1
+    tie_differs: bool = False
+
+
+def _ts_key(rec: SourceRecord) -> float:
+    ts, _ = parse_timestamp(rec.get("DatumLetzteAktualisierung"))
+    return -ts.timestamp() if ts else float("inf")
+
+
+def _offer(best: dict[str, _Best], record_id: str, rec: SourceRecord, **extra) -> None:
     """
-    Keeps one record per ID: the newest DatumLetzteAktualisierung wins, ties
-    go to the earliest position in the source. Losers are rejected with the
-    reason, nothing is dropped silently. Returns the winners and the IDs
-    whose duplicates disagreed without a newer timestamp to decide.
+    Duplicate rule: the newest DatumLetzteAktualisierung wins; on a tie the
+    earliest position in the files wins. Records arrive in file order, so a
+    later record only replaces the current best when it is strictly newer.
     """
-    groups: dict[str, list[SourceRecord]] = defaultdict(list)
-    for rec in records:
-        groups[rec.get(id_field)].append(rec)
-
-    winners: dict[str, SourceRecord] = {}
-    conflicts: set[str] = set()
-
-    for record_id, group in groups.items():
-        if len(group) == 1:
-            winners[record_id] = group[0]
-            continue
-
-        def sort_key(rec: SourceRecord):
-            ts, _ = parse_timestamp(rec.get("DatumLetzteAktualisierung"))
-            return (-(ts.timestamp()) if ts else float("inf"), rec.file, rec.index)
-
-        ordered = sorted(group, key=sort_key)
-        winner = ordered[0]
-        winners[record_id] = winner
-        winner_ts = sort_key(winner)[0]
-
-        for loser in ordered[1:]:
-            if loser.fields == winner.fields:
-                code, detail = "DUPLICATE_EXACT", "identical copy"
-            else:
-                code = "DUPLICATE_SUPERSEDED"
-                detail = f"superseded by {winner.file}#{winner.index}"
-                if sort_key(loser)[0] == winner_ts:
-                    conflicts.add(record_id)
-                    detail += " (same timestamp, contents differ)"
-            rejects.append(Reject(loser.file, loser.index, record_id, code, detail, loser.fields))
-            logger.warning(
-                "%s: %s",
-                code,
-                detail,
-                extra={"source": loser.file, "record": record_id},
-            )
-
-    return winners, conflicts
+    key, digest = _ts_key(rec), record_hash(rec)
+    current = best.get(record_id)
+    if current is None:
+        best[record_id] = _Best(key, (rec.file, rec.index), digest, **extra)
+        return
+    current.copies += 1
+    if key < current.ts_key:
+        best[record_id] = _Best(key, (rec.file, rec.index), digest, copies=current.copies, **extra)
+    elif key == current.ts_key and digest != current.digest:
+        current.tie_differs = True
 
 
-def _region(rec: SourceRecord, flags: _Flags) -> str | None:
-    """Returns the 2-digit AGS state prefix, preferring the AGS itself."""
+def _duplicate_reject(rec: SourceRecord, record_id: str, winner: _Best) -> Reject:
+    if record_hash(rec) == winner.digest:
+        code, detail = "DUPLICATE_EXACT", "identical copy"
+    else:
+        code = "DUPLICATE_SUPERSEDED"
+        detail = f"superseded by {winner.position[0]}#{winner.position[1]}"
+        if _ts_key(rec) == winner.ts_key:
+            detail += " (same timestamp, contents differ)"
+    return Reject(rec.file, rec.index, record_id, code, detail, rec.fields)
+
+
+def _unpack(packed: tuple[str, int, str]) -> SourceRecord:
+    file, index, fields = packed
+    return SourceRecord(file, index, json.loads(fields))
+
+
+def _region(rec: SourceRecord) -> tuple[str | None, str | None]:
+    """Returns (2-digit AGS state prefix, conflict detail or None)."""
     ags = clean(rec.get("Gemeindeschluessel"))
     ags_state = ags[:2] if ags and AGS_RE.match(ags) and ags[:2] in catalog.STATES else None
     bl_state = catalog.BUNDESLAND_CODE_TO_AGS.get(clean(rec.get("Bundesland")) or "")
-
+    conflict = None
     if ags_state and bl_state and ags_state != bl_state:
-        flags.add(
-            "REGION_CONFLICT",
-            f"Gemeindeschluessel {ags} vs Bundesland code {rec.get('Bundesland')}",
+        conflict = f"Gemeindeschluessel {ags} vs Bundesland code {rec.get('Bundesland')}"
+    return ags_state or bl_state, conflict
+
+
+def _award_number(eeg_rec: SourceRecord) -> str | None:
+    for name in catalog.TENDER_AWARD_FIELDS:
+        value = clean(eeg_rec.get(name))
+        if value:
+            return value
+    return None
+
+
+def screen(
+    cfg: RunConfig,
+    logger: logging.Logger,
+    on_target: Callable[[dict], None],
+    on_reject: Callable[[Reject], None],
+    sources: tuple[list[SourceFile], list[SourceFile]] | None = None,
+) -> Summary:
+    scope = normalize_scope(cfg.scope)
+    scope_ags = None if scope == "DE" else catalog.STATE_ABBR_TO_AGS[scope]
+    unit_sources, eeg_sources = sources or discover(cfg.source_dir)
+    stats = Counter()
+    digest = RowDigest()
+
+    def reject(r: Reject) -> None:
+        stats["rejected"] += 1
+        logger.warning(
+            "%s: %s", r.reason_code, r.detail, extra={"source": r.source_file, "record": r.record_id or "-"}
         )
-    return ags_state or bl_state
+        on_reject(r)
+
+    def classify_unit(rec: SourceRecord) -> tuple[str, str | None, str | None]:
+        """Returns (verdict, unit_id, detail); verdict is ok, out_of_scope or a reject code."""
+        unit_id = clean(rec.get("EinheitMastrNummer"))
+        if unit_id is None:
+            return "MISSING_UNIT_ID", None, "EinheitMastrNummer is empty"
+        if not UNIT_ID_RE.match(unit_id):
+            return "INVALID_UNIT_ID", unit_id, f"unexpected format {unit_id!r}"
+        carrier = clean(rec.get("Energietraeger"))
+        if carrier is not None and carrier != catalog.ENERGY_CARRIER_SOLAR:
+            return "NOT_SOLAR", unit_id, f"Energietraeger {carrier}"
+        if scope_ags is not None:
+            state_ags, _ = _region(rec)
+            if state_ags is None:
+                return "REGION_UNKNOWN", unit_id, "no usable Gemeindeschluessel or Bundesland"
+            if state_ags != scope_ags:
+                return "out_of_scope", unit_id, None
+        return "ok", unit_id, None
+
+    def unit_records():
+        for source in unit_sources:
+            yield from iter_records(source, UNIT_TAG, logger)
+
+    # --- Pass 1: unit index --------------------------------------------------
+    unit_best: dict[str, _Best] = {}
+    for rec in unit_records():
+        stats["units_read"] += 1
+        verdict, unit_id, detail = classify_unit(rec)
+        if verdict == "out_of_scope":
+            stats["units_out_of_scope"] += 1
+        elif verdict != "ok":
+            reject(Reject(rec.file, rec.index, unit_id, verdict, detail, rec.fields))
+        else:
+            _offer(unit_best, unit_id, rec, eeg_id=clean(rec.get("EegMaStRNummer")))
+
+    eeg_link_count = Counter(b.eeg_id for b in unit_best.values() if b.eeg_id)
+
+    # --- Pass 2: linked EEG records -----------------------------------------
+    # Linked EEG records are kept as JSON strings, which take less memory
+    # than parsed dicts, and rebuilt when a row needs them.
+    eeg_best: dict[str, _Best] = {}
+    eeg_copies: dict[str, list[tuple[str, int, str]]] = {}
+    for source in eeg_sources:
+        for rec in iter_records(source, EEG_TAG, logger):
+            stats["eeg_records_read"] += 1
+            eeg_id = clean(rec.get("EegMaStRNummer"))
+            if eeg_id is None:
+                reject(
+                    Reject(rec.file, rec.index, None, "MISSING_EEG_ID", "EegMaStRNummer is empty", rec.fields)
+                )
+            elif not EEG_ID_RE.match(eeg_id):
+                reject(
+                    Reject(
+                        rec.file,
+                        rec.index,
+                        eeg_id,
+                        "INVALID_EEG_ID",
+                        f"unexpected format {eeg_id!r}",
+                        rec.fields,
+                    )
+                )
+            elif eeg_id not in eeg_link_count:
+                stats["eeg_records_not_linked"] += 1
+            else:
+                eeg_copies.setdefault(eeg_id, []).append(
+                    (rec.file, rec.index, json.dumps(rec.fields, ensure_ascii=False))
+                )
+                _offer(eeg_best, eeg_id, rec)
+
+    eeg_by_id: dict[str, tuple[str, int, str]] = {}
+    for eeg_id, copies in eeg_copies.items():
+        winner = eeg_best[eeg_id]
+        for copy in copies:
+            if copy[:2] == winner.position:
+                eeg_by_id[eeg_id] = copy
+            else:
+                reject(_duplicate_reject(_unpack(copy), eeg_id, winner))
+    del eeg_copies
+
+    # --- Pass 3: staged rows -------------------------------------------------
+    for rec in unit_records():
+        verdict, unit_id, _ = classify_unit(rec)
+        if verdict != "ok":
+            continue  # already counted or rejected in pass 1
+        winner = unit_best[unit_id]
+        if (rec.file, rec.index) != winner.position:
+            reject(_duplicate_reject(rec, unit_id, winner))
+            continue
+
+        eeg_id = winner.eeg_id
+        packed = eeg_by_id.get(eeg_id) if eeg_id else None
+        eeg_rec = _unpack(packed) if packed else None
+        eeg_winner = eeg_best.get(eeg_id) if eeg_id else None
+        row = _build_row(
+            cfg,
+            rec,
+            unit_id,
+            winner,
+            eeg_id,
+            eeg_rec,
+            eeg_winner,
+            eeg_link_count[eeg_id] if eeg_id else 0,
+        )
+        stats["units_staged"] += 1
+        digest.update(row)
+        on_target(row)
+
+    stats["units_unique_in_scope"] = len(unit_best)
+    stats["eeg_records_linked"] = len(eeg_by_id)
+    result_stats = {
+        key: stats[key]
+        for key in (
+            "units_read",
+            "eeg_records_read",
+            "units_out_of_scope",
+            "units_unique_in_scope",
+            "units_staged",
+            "eeg_records_linked",
+            "eeg_records_not_linked",
+            "rejected",
+        )
+    }
+    logger.info("Pipeline finished: %s", result_stats)
+    return Summary(unit_sources, eeg_sources, result_stats, digest.hexdigest())
+
+
+def _build_row(
+    cfg: RunConfig,
+    rec: SourceRecord,
+    unit_id: str,
+    winner: _Best,
+    eeg_id: str | None,
+    eeg_rec: SourceRecord | None,
+    eeg_winner: _Best | None,
+    shared_count: int,
+) -> dict:
+    flags = _Flags()
+
+    state_ags, region_conflict = _region(rec)
+    if region_conflict:
+        flags.add("REGION_CONFLICT", region_conflict)
+    if winner.tie_differs:
+        flags.add("DUPLICATE_CONFLICT", "duplicate unit rows with equal timestamps")
+
+    # Unit status and dates
+    status_code = clean(rec.get("EinheitBetriebsstatus"))
+    unit_status = catalog.UNIT_STATUS.get(status_code or "", "unknown")
+    if unit_status == "in_planning":
+        flags.add("UNIT_NOT_COMMISSIONED", "unit is still in planning")
+    elif unit_status == "temporarily_decommissioned":
+        flags.add("UNIT_TEMPORARILY_DECOMMISSIONED")
+    elif unit_status == "permanently_decommissioned":
+        flags.add("UNIT_PERMANENTLY_DECOMMISSIONED")
+    elif unit_status == "unknown":
+        flags.add("UNIT_STATUS_UNKNOWN", f"EinheitBetriebsstatus={status_code!r}")
+
+    unit_date, unit_date_err = parse_date(rec.get("Inbetriebnahmedatum"))
+    if unit_date_err and unit_date_err != "missing":
+        flags.add("UNIT_DATE_INVALID", unit_date_err)
+
+    verification = clean(rec.get("NetzbetreiberpruefungStatus"))
+    if verification not in catalog.GRID_OPERATOR_VERIFIED_CODES:
+        flags.add("NOT_GRID_OPERATOR_VERIFIED", f"NetzbetreiberpruefungStatus={verification!r}")
+
+    unit_ts, ts_err = parse_timestamp(rec.get("DatumLetzteAktualisierung"))
+    if ts_err and ts_err != "missing":
+        flags.add("TIMESTAMP_INVALID", ts_err)
+
+    gross_kw, gross_err = parse_kw(rec.get("Bruttoleistung"))
+    net_kw, net_err = parse_kw(rec.get("Nettonennleistung"))
+    if gross_err or net_err:
+        flags.add("POWER_INVALID", "; ".join(e for e in (gross_err, net_err) if e))
+
+    # EEG registration
+    eeg_date = None
+    installed_kw = None
+    if eeg_id is None:
+        flags.add("NO_EEG_LINK", "unit has no EEG registration number")
+    elif not EEG_ID_RE.match(eeg_id):
+        flags.add("EEG_ID_INVALID", f"unexpected format {eeg_id!r}")
+    elif eeg_rec is None:
+        flags.add("EEG_RECORD_NOT_FOUND", f"{eeg_id} not in EEG export")
+    else:
+        if eeg_winner is not None and eeg_winner.tie_differs:
+            flags.add("DUPLICATE_CONFLICT", "duplicate EEG rows with equal timestamps")
+        if shared_count > 1:
+            flags.add("SHARED_EEG_ANLAGE", f"{shared_count} units share {eeg_id}")
+        linked = split_ids(eeg_rec.get("VerknuepfteEinheitenMaStRNummern"))
+        if linked and unit_id not in linked:
+            flags.add("EEG_LINK_INCONSISTENT", f"{eeg_id} lists {', '.join(linked)}")
+
+        eeg_date, eeg_date_err = parse_date(eeg_rec.get("EegInbetriebnahmedatum"))
+        if eeg_date_err == "missing":
+            flags.add("EEG_DATE_MISSING", "EegInbetriebnahmedatum is empty")
+        elif eeg_date_err:
+            flags.add("EEG_DATE_INVALID", eeg_date_err)
+        elif eeg_date > cfg.reference_date:
+            flags.add("EEG_DATE_IN_FUTURE", f"{eeg_date} is after {cfg.reference_date}")
+            eeg_date = None
+
+        if eeg_date and unit_date:
+            gap = abs((eeg_date - unit_date).days)
+            if gap > cfg.date_mismatch_tolerance_days:
+                flags.add(
+                    "DATE_MISMATCH_UNIT_VS_EEG",
+                    f"unit {unit_date}, EEG {eeg_date} ({gap} days apart)",
+                )
+
+        installed_kw, _ = parse_kw(eeg_rec.get("InstallierteLeistung"))
+        tender_kw = installed_kw if installed_kw is not None else gross_kw
+        if eeg_date and needs_tender_award(eeg_date, tender_kw) and not _award_number(eeg_rec):
+            flags.add(
+                "TENDER_AWARD_UNVERIFIED",
+                f"{tender_kw} kW commissioned {eeg_date} with no Zuschlagsnummer",
+            )
+
+    # Spatial metadata
+    coords, coord_err = parse_coordinates(rec.get("Breitengrad"), rec.get("Laengengrad"))
+    if coord_err:
+        flags.add("COORDINATES_INVALID", coord_err)
+    bbox = catalog.STATE_BBOX.get(state_ags or "")
+    if coords and bbox and not in_bbox(*coords, bbox):
+        flags.add(
+            "COORDINATES_OUTSIDE_REGION_BBOX",
+            f"{coords} outside {catalog.STATES[state_ags][1]} bounding box",
+        )
+
+    postcode = clean(rec.get("Postleitzahl"))
+    if postcode and not POSTCODE_RE.match(postcode):
+        flags.add("POSTCODE_INVALID", f"{postcode!r}")
+        postcode = None
+    ags = clean(rec.get("Gemeindeschluessel"))
+    ags = ags if ags and AGS_RE.match(ags) else None
+
+    if coords:
+        precision = "point"
+    elif postcode:
+        precision = "postcode"
+    elif ags:
+        precision = "municipality"
+    else:
+        precision = "none"
+
+    # Expiry derivation: only from a valid EEG commissioning date and only
+    # when nothing blocking was found.
+    end_date = expiry_year = None
+    basis = None
+    if eeg_date and not flags.has(BLOCKING):
+        expiry = compute_expiry(eeg_date)
+        for code in expiry.notes + expiry.needs_review:
+            flags.add(code)
+        end_date, expiry_year = expiry.remuneration_end_date, expiry.expiry_year
+        basis = "EegInbetriebnahmedatum"
+
+    if flags.has(BLOCKING):
+        status = "incomplete"
+    elif flags.has(REVIEW):
+        status = "needs_review"
+    else:
+        status = "confirmed"
+
+    bucket = expiry_bucket(end_date, cfg.reference_date, cfg.horizon_years)
+    candidate = (
+        status != "incomplete"
+        and unit_status in ("operating", "temporarily_decommissioned")
+        and bucket in ("expired", "within_horizon")
+    )
+
+    eeg_ts = None
+    if eeg_rec is not None:
+        eeg_ts, _ = parse_timestamp(eeg_rec.get("DatumLetzteAktualisierung"))
+
+    state = catalog.STATES.get(state_ags or "")
+    return {
+        "mastr_unit_id": unit_id,
+        "eeg_mastr_id": eeg_id,
+        "eeg_plant_key": clean(eeg_rec.get("AnlagenschluesselEeg")) if eeg_rec else None,
+        "tender_award_number": _award_number(eeg_rec) if eeg_rec else None,
+        "unit_name": clean(rec.get("NameStromerzeugungseinheit")),
+        "unit_status_code": status_code,
+        "unit_status": unit_status,
+        "state_ags": state_ags,
+        "state_code": state[0] if state else None,
+        "municipality_key": ags,
+        "municipality": clean(rec.get("Gemeinde")),
+        "postcode": postcode,
+        "city": clean(rec.get("Ort")),
+        "latitude": coords[0] if coords else None,
+        "longitude": coords[1] if coords else None,
+        "spatial_precision": precision,
+        "gross_power_kw": gross_kw,
+        "net_power_kw": net_kw,
+        "eeg_installed_power_kw": installed_kw,
+        "unit_commissioning_date": unit_date,
+        "eeg_commissioning_date": eeg_date,
+        "remuneration_end_date": end_date,
+        "expiry_year": expiry_year,
+        "expiry_basis": basis,
+        "rule_version": RULE_VERSION,
+        "expiry_status": status,
+        "expiry_bucket": bucket,
+        "is_repowering_candidate": candidate,
+        "flags": flags.codes(),
+        "flag_details": dict(sorted(flags.items.items())),
+        "source_last_updated_utc": unit_ts,
+        "eeg_last_updated_utc": eeg_ts,
+        "source_unit_file": f"{rec.file}#{rec.index}",
+        "source_eeg_file": f"{eeg_rec.file}#{eeg_rec.index}" if eeg_rec else None,
+        "unit_record_hash": record_hash(rec),
+        "eeg_record_hash": record_hash(eeg_rec) if eeg_rec else None,
+        "raw_unit": rec.fields,
+        "raw_eeg": eeg_rec.fields if eeg_rec else None,
+        "reference_date": cfg.reference_date,
+        "horizon_years": cfg.horizon_years,
+    }
 
 
 def run_pipeline(cfg: RunConfig, logger: logging.Logger) -> PipelineResult:
-    scope = normalize_scope(cfg.scope)
-    scope_ags = None if scope == "DE" else catalog.STATE_ABBR_TO_AGS[scope]
-
-    unit_sources, eeg_sources = discover(cfg.source_dir)
-    units_raw = [r for s in unit_sources for r in iter_records(s, UNIT_TAG, logger)]
-    eeg_raw = [r for s in eeg_sources for r in iter_records(s, EEG_TAG, logger)]
-
-    rejects: list[Reject] = []
-
-    def reject(rec: SourceRecord, record_id, code: str, detail: str) -> None:
-        rejects.append(Reject(rec.file, rec.index, record_id, code, detail, rec.fields))
-        logger.warning("%s: %s", code, detail, extra={"source": rec.file, "record": record_id or "-"})
-
-    # --- EEG registrations ------------------------------------------------
-    eeg_valid = []
-    for rec in eeg_raw:
-        eeg_id = clean(rec.get("EegMaStRNummer"))
-        if eeg_id is None:
-            reject(rec, None, "MISSING_EEG_ID", "EegMaStRNummer is empty")
-        elif not EEG_ID_RE.match(eeg_id):
-            reject(rec, eeg_id, "INVALID_EEG_ID", f"unexpected format {eeg_id!r}")
-        else:
-            eeg_valid.append(rec)
-    eeg_by_id, eeg_conflicts = _dedupe(eeg_valid, "EegMaStRNummer", rejects, logger)
-
-    # --- Solar units ------------------------------------------------------
-    units_valid = []
-    for rec in units_raw:
-        unit_id = clean(rec.get("EinheitMastrNummer"))
-        if unit_id is None:
-            reject(rec, None, "MISSING_UNIT_ID", "EinheitMastrNummer is empty")
-        elif not UNIT_ID_RE.match(unit_id):
-            reject(rec, unit_id, "INVALID_UNIT_ID", f"unexpected format {unit_id!r}")
-        else:
-            units_valid.append(rec)
-    units_by_id, unit_conflicts = _dedupe(units_valid, "EinheitMastrNummer", rejects, logger)
-
-    eeg_link_count = Counter(clean(u.get("EegMaStRNummer")) for u in units_by_id.values())
-
+    """Runs screen() and keeps every row and reject in memory."""
     targets: list[dict] = []
-    out_of_scope = 0
-    referenced_eeg: set[str] = set()
-
-    for unit_id in sorted(units_by_id):
-        rec = units_by_id[unit_id]
-        flags = _Flags()
-
-        carrier = clean(rec.get("Energietraeger"))
-        if carrier is not None and carrier != catalog.ENERGY_CARRIER_SOLAR:
-            reject(rec, unit_id, "NOT_SOLAR", f"Energietraeger {carrier}")
-            continue
-
-        state_ags = _region(rec, flags)
-        if scope_ags is not None:
-            if state_ags is None:
-                reject(rec, unit_id, "REGION_UNKNOWN", "no usable Gemeindeschluessel or Bundesland")
-                continue
-            if state_ags != scope_ags:
-                out_of_scope += 1
-                continue
-
-        if unit_id in unit_conflicts:
-            flags.add("DUPLICATE_CONFLICT", "duplicate unit rows with equal timestamps")
-
-        # Unit status and dates
-        status_code = clean(rec.get("EinheitBetriebsstatus"))
-        unit_status = catalog.UNIT_STATUS.get(status_code or "", "unknown")
-        if unit_status == "in_planning":
-            flags.add("UNIT_NOT_COMMISSIONED", "unit is still in planning")
-        elif unit_status == "temporarily_decommissioned":
-            flags.add("UNIT_TEMPORARILY_DECOMMISSIONED")
-        elif unit_status == "permanently_decommissioned":
-            flags.add("UNIT_PERMANENTLY_DECOMMISSIONED")
-        elif unit_status == "unknown":
-            flags.add("UNIT_STATUS_UNKNOWN", f"EinheitBetriebsstatus={status_code!r}")
-
-        unit_date, unit_date_err = parse_date(rec.get("Inbetriebnahmedatum"))
-        if unit_date_err and unit_date_err != "missing":
-            flags.add("UNIT_DATE_INVALID", unit_date_err)
-
-        verification = clean(rec.get("NetzbetreiberpruefungStatus"))
-        if verification not in catalog.GRID_OPERATOR_VERIFIED_CODES:
-            flags.add(
-                "NOT_GRID_OPERATOR_VERIFIED",
-                f"NetzbetreiberpruefungStatus={verification!r}",
-            )
-
-        unit_ts, ts_err = parse_timestamp(rec.get("DatumLetzteAktualisierung"))
-        if ts_err and ts_err != "missing":
-            flags.add("TIMESTAMP_INVALID", ts_err)
-
-        # EEG registration
-        eeg_id = clean(rec.get("EegMaStRNummer"))
-        eeg_rec = None
-        eeg_date = None
-        if eeg_id is None:
-            flags.add("NO_EEG_LINK", "unit has no EEG registration number")
-        elif not EEG_ID_RE.match(eeg_id):
-            flags.add("EEG_ID_INVALID", f"unexpected format {eeg_id!r}")
-        elif eeg_id not in eeg_by_id:
-            flags.add("EEG_RECORD_NOT_FOUND", f"{eeg_id} not in EEG export")
-        else:
-            eeg_rec = eeg_by_id[eeg_id]
-            referenced_eeg.add(eeg_id)
-            if eeg_id in eeg_conflicts:
-                flags.add("DUPLICATE_CONFLICT", "duplicate EEG rows with equal timestamps")
-            if eeg_link_count[eeg_id] > 1:
-                flags.add("SHARED_EEG_ANLAGE", f"{eeg_link_count[eeg_id]} units share {eeg_id}")
-            linked = split_ids(eeg_rec.get("VerknuepfteEinheitenMaStRNummern"))
-            if linked and unit_id not in linked:
-                flags.add("EEG_LINK_INCONSISTENT", f"{eeg_id} lists {', '.join(linked)}")
-
-            eeg_date, eeg_date_err = parse_date(eeg_rec.get("EegInbetriebnahmedatum"))
-            if eeg_date_err == "missing":
-                flags.add("EEG_DATE_MISSING", "EegInbetriebnahmedatum is empty")
-            elif eeg_date_err:
-                flags.add("EEG_DATE_INVALID", eeg_date_err)
-            elif eeg_date > cfg.reference_date:
-                flags.add("EEG_DATE_IN_FUTURE", f"{eeg_date} is after {cfg.reference_date}")
-                eeg_date = None
-
-            if eeg_date and unit_date:
-                gap = abs((eeg_date - unit_date).days)
-                if gap > cfg.date_mismatch_tolerance_days:
-                    flags.add(
-                        "DATE_MISMATCH_UNIT_VS_EEG",
-                        f"unit {unit_date}, EEG {eeg_date} ({gap} days apart)",
-                    )
-
-        # Spatial metadata
-        coords, coord_err = parse_coordinates(rec.get("Breitengrad"), rec.get("Laengengrad"))
-        if coord_err:
-            flags.add("COORDINATES_INVALID", coord_err)
-        bbox = catalog.STATE_BBOX.get(state_ags or "")
-        if coords and bbox and not in_bbox(*coords, bbox):
-            flags.add(
-                "COORDINATES_OUTSIDE_REGION_BBOX",
-                f"{coords} outside {catalog.STATES[state_ags][1]} bounding box",
-            )
-
-        postcode = clean(rec.get("Postleitzahl"))
-        if postcode and not POSTCODE_RE.match(postcode):
-            flags.add("POSTCODE_INVALID", f"{postcode!r}")
-            postcode = None
-        ags = clean(rec.get("Gemeindeschluessel"))
-        ags = ags if ags and AGS_RE.match(ags) else None
-
-        if coords:
-            precision = "point"
-        elif postcode:
-            precision = "postcode"
-        elif ags:
-            precision = "municipality"
-        else:
-            precision = "none"
-
-        gross_kw, gross_err = parse_kw(rec.get("Bruttoleistung"))
-        net_kw, net_err = parse_kw(rec.get("Nettonennleistung"))
-        if gross_err or net_err:
-            flags.add("POWER_INVALID", "; ".join(e for e in (gross_err, net_err) if e))
-
-        # Expiry derivation: only from a valid EEG commissioning date and
-        # only when nothing blocking was found.
-        end_date = expiry_year = None
-        basis = None
-        if eeg_date and not flags.has(BLOCKING):
-            expiry = compute_expiry(eeg_date)
-            for code in expiry.notes + expiry.needs_review:
-                flags.add(code)
-            end_date, expiry_year = expiry.remuneration_end_date, expiry.expiry_year
-            basis = "EegInbetriebnahmedatum"
-
-        if flags.has(BLOCKING):
-            status = "incomplete"
-        elif flags.has(REVIEW):
-            status = "needs_review"
-        else:
-            status = "confirmed"
-
-        bucket = expiry_bucket(end_date, cfg.reference_date, cfg.horizon_years)
-        candidate = (
-            status != "incomplete"
-            and unit_status in ("operating", "temporarily_decommissioned")
-            and bucket in ("expired", "within_horizon")
-        )
-
-        eeg_ts = None
-        if eeg_rec is not None:
-            eeg_ts, _ = parse_timestamp(eeg_rec.get("DatumLetzteAktualisierung"))
-
-        state = catalog.STATES.get(state_ags or "")
-        targets.append(
-            {
-                "mastr_unit_id": unit_id,
-                "eeg_mastr_id": eeg_id,
-                "eeg_plant_key": clean(eeg_rec.get("AnlagenschluesselEeg")) if eeg_rec else None,
-                "unit_name": clean(rec.get("NameStromerzeugungseinheit")),
-                "unit_status_code": status_code,
-                "unit_status": unit_status,
-                "state_ags": state_ags,
-                "state_code": state[0] if state else None,
-                "municipality_key": ags,
-                "municipality": clean(rec.get("Gemeinde")),
-                "postcode": postcode,
-                "city": clean(rec.get("Ort")),
-                "latitude": coords[0] if coords else None,
-                "longitude": coords[1] if coords else None,
-                "spatial_precision": precision,
-                "gross_power_kw": gross_kw,
-                "net_power_kw": net_kw,
-                "unit_commissioning_date": unit_date,
-                "eeg_commissioning_date": eeg_date,
-                "remuneration_end_date": end_date,
-                "expiry_year": expiry_year,
-                "expiry_basis": basis,
-                "rule_version": RULE_VERSION,
-                "expiry_status": status,
-                "expiry_bucket": bucket,
-                "is_repowering_candidate": candidate,
-                "flags": flags.codes(),
-                "flag_details": dict(sorted(flags.items.items())),
-                "source_last_updated_utc": unit_ts,
-                "eeg_last_updated_utc": eeg_ts,
-                "source_unit_file": f"{rec.file}#{rec.index}",
-                "source_eeg_file": f"{eeg_rec.file}#{eeg_rec.index}" if eeg_rec else None,
-                "unit_record_hash": record_hash(rec),
-                "eeg_record_hash": record_hash(eeg_rec) if eeg_rec else None,
-                "raw_unit": rec.fields,
-                "raw_eeg": eeg_rec.fields if eeg_rec else None,
-                "reference_date": cfg.reference_date,
-                "horizon_years": cfg.horizon_years,
-            }
-        )
-
-    stats = {
-        "units_read": len(units_raw),
-        "eeg_records_read": len(eeg_raw),
-        "units_unique": len(units_by_id),
-        "eeg_records_unique": len(eeg_by_id),
-        "units_out_of_scope": out_of_scope,
-        "units_staged": len(targets),
-        "eeg_records_unreferenced_in_scope": len(set(eeg_by_id) - referenced_eeg),
-        "rejected": len(rejects),
-    }
-    logger.info("Pipeline finished: %s", stats)
-
-    return PipelineResult(cfg, unit_sources, eeg_sources, targets, rejects, stats)
+    rejects: list[Reject] = []
+    summary = screen(cfg, logger, targets.append, rejects.append)
+    return PipelineResult(cfg, summary.unit_sources, summary.eeg_sources, targets, rejects, summary.stats)
 
 
 def json_default(value):

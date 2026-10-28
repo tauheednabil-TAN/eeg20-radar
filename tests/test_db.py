@@ -24,7 +24,7 @@ def _count(conn, sql, params=()):
 def test_write_and_read_back(staging_conn, fixture_result, logger):
     db.write_result(staging_conn, fixture_result, "run-1", logger)
 
-    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_targets") == 29
+    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_targets") == 32
     assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_rejects") == 8
     assert _count(
         staging_conn,
@@ -44,21 +44,21 @@ def test_write_and_read_back(staging_conn, fixture_result, logger):
             "SELECT status, result_digest, stats->>'units_staged' "
             "FROM iris_staging.eeg_ingestion_runs WHERE run_id = 'run-1'"
         )
-        assert cur.fetchone() == ("succeeded", fixture_result.digest, "29")
+        assert cur.fetchone() == ("succeeded", fixture_result.digest, "32")
 
 
 def test_rerun_is_idempotent(staging_conn, fixture_result, logger):
     db.write_result(staging_conn, fixture_result, "run-1", logger)
     db.write_result(staging_conn, fixture_result, "run-2", logger)
 
-    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_targets") == 29
+    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_targets") == 32
     assert (
         _count(
             staging_conn,
             "SELECT count(*) FROM iris_staging.eeg_repowering_targets "
             "WHERE first_seen_run_id = 'run-1' AND last_seen_run_id = 'run-2'",
         )
-        == 29
+        == 32
     )
 
 
@@ -68,8 +68,8 @@ def test_refresh_never_deletes_rows(staging_conn, fixture_result, logger):
     smaller = dataclasses.replace(fixture_result, targets=fixture_result.targets[:10])
     info = db.write_result(staging_conn, smaller, "run-2", logger)
 
-    assert info["rows_not_seen_this_run"] == 19
-    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_targets") == 29
+    assert info["rows_not_seen_this_run"] == 22
+    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_targets") == 32
 
 
 def test_annual_refresh_moves_buckets(staging_conn, make_config, logger):
@@ -131,3 +131,104 @@ def test_superuser_connection_is_refused():
         pytest.skip("EEG20_TEST_ADMIN_URL not set")
     with pytest.raises(db.StagingGuardError, match="superuser"):
         db.connect(TEST_ADMIN_URL, "iris_staging")
+
+
+def test_history_keeps_every_runs_assessment(staging_conn, make_config, logger):
+    first = run_pipeline(make_config(reference_date=date(2026, 1, 1)), logger)
+    later = run_pipeline(make_config(reference_date=date(2027, 1, 1)), logger)
+    db.write_result(staging_conn, first, "run-2026", logger)
+    info = db.write_result(staging_conn, later, "run-2027", logger)
+
+    assert info["history_rows_written"] == 32
+    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_target_history") == 64
+    with staging_conn.cursor() as cur:
+        cur.execute(
+            "SELECT reference_date, expiry_bucket, is_repowering_candidate "
+            "FROM iris_staging.eeg_repowering_target_history "
+            "WHERE mastr_unit_id = %s ORDER BY reference_date",
+            (unit(1),),
+        )
+        assert cur.fetchall() == [
+            (date(2026, 1, 1), "within_horizon", True),
+            (date(2027, 1, 1), "expired", True),
+        ]
+
+
+def test_cli_streams_into_staging(staging_conn, monkeypatch, tmp_path):
+    from conftest import FIXTURES, TEST_DB_URL
+    from eeg20_radar.cli import main
+
+    monkeypatch.setenv("DATABASE_URL", TEST_DB_URL)
+    code = main(
+        [
+            "run",
+            "--source-dir",
+            str(FIXTURES),
+            "--reference-date",
+            "2026-01-01",
+            "--output-dir",
+            str(tmp_path),
+        ]
+    )
+    assert code == 0
+    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_targets") == 32
+    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_target_history") == 32
+    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_rejects") == 8
+    assert (
+        _count(
+            staging_conn, "SELECT count(*) FROM iris_staging.eeg_ingestion_runs WHERE status = 'succeeded'"
+        )
+        == 1
+    )
+
+
+def test_cli_failure_mid_run_stages_nothing(staging_conn, monkeypatch, tmp_path):
+    import shutil
+
+    from conftest import FIXTURES, TEST_DB_URL
+    from eeg20_radar.cli import main
+
+    # Valid unit file, truncated EEG file: pass 1 already sent rejects to the
+    # writer when pass 2 hits the broken XML.
+    shutil.copy(FIXTURES / "EinheitenSolar_1.xml", tmp_path)
+    eeg = (FIXTURES / "AnlagenEegSolar_1.xml").read_text(encoding="utf-8")
+    (tmp_path / "AnlagenEegSolar_1.xml").write_text(eeg[: len(eeg) // 2], encoding="utf-8")
+    monkeypatch.setenv("DATABASE_URL", TEST_DB_URL)
+
+    code = main(
+        [
+            "run",
+            "--source-dir",
+            str(tmp_path),
+            "--reference-date",
+            "2026-01-01",
+            "--output-dir",
+            str(tmp_path / "out"),
+        ]
+    )
+    assert code == 1
+    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_targets") == 0
+    assert _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_repowering_rejects") == 0
+    assert (
+        _count(staging_conn, "SELECT count(*) FROM iris_staging.eeg_ingestion_runs WHERE status = 'failed'")
+        == 1
+    )
+    assert list((tmp_path / "out").iterdir()) == []
+
+
+def test_role_with_write_access_to_iris_core_is_refused(staging_conn):
+    if not TEST_ADMIN_URL:
+        pytest.skip("EEG20_TEST_ADMIN_URL not set")
+    from conftest import TEST_DB_URL
+
+    with psycopg.connect(TEST_ADMIN_URL, autocommit=True) as admin:
+        admin.execute("CREATE SCHEMA IF NOT EXISTS iris_core")
+        admin.execute("CREATE TABLE IF NOT EXISTS iris_core.guard_canary (x int)")
+        user = staging_conn.info.user
+        admin.execute(f'GRANT INSERT ON iris_core.guard_canary TO "{user}"')
+        try:
+            with pytest.raises(db.StagingGuardError, match="can modify tables in 'iris_core'"):
+                db.connect(TEST_DB_URL, "iris_staging")
+        finally:
+            admin.execute(f'REVOKE ALL ON iris_core.guard_canary FROM "{user}"')
+            admin.execute("DROP TABLE iris_core.guard_canary")

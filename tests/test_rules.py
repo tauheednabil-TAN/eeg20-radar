@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from eeg20_radar.rules import compute_expiry, expiry_bucket
+from eeg20_radar.rules import compute_expiry, expiry_bucket, needs_tender_award
 
 
 @pytest.mark.parametrize(
@@ -53,3 +53,16 @@ def test_eeg2021_regime_is_flagged_not_confirmed():
 )
 def test_expiry_bucket(end, bucket):
     assert expiry_bucket(end, date(2026, 1, 1), 5) == bucket
+
+
+@pytest.mark.parametrize(
+    ("commissioned", "kw", "expected"),
+    [
+        (date(2017, 1, 1), 750.1, True),
+        (date(2017, 1, 1), 750.0, False),
+        (date(2016, 12, 31), 5000.0, False),
+        (date(2020, 6, 1), None, False),
+    ],
+)
+def test_tender_award_needed_above_750_kw_from_2017(commissioned, kw, expected):
+    assert needs_tender_award(commissioned, kw) is expected

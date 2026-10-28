@@ -1,4 +1,10 @@
-"""Quality report (Markdown + JSON) and CSV export of the staged rows."""
+"""
+Quality report (Markdown + JSON) and CSV exports.
+
+ReportBuilder and OutputFiles take rows one at a time, so a national run
+never holds all rows in memory. The report keeps counts plus a capped sample
+of rejects; the full reject list goes to the CSV and the database.
+"""
 
 import csv
 import json
@@ -6,8 +12,12 @@ from collections import Counter
 from pathlib import Path
 
 from eeg20_radar.catalog import STATE_ABBR_TO_AGS, STATES
-from eeg20_radar.pipeline import FLAG_SEVERITY, PipelineResult, json_default
+from eeg20_radar.pipeline import FLAG_SEVERITY, PipelineResult, Reject, RunConfig, json_default
 from eeg20_radar.rules import RULE_VERSION
+from eeg20_radar.source import SourceFile
+
+REJECT_SAMPLE_LIMIT = 200
+ID_LIST_LIMIT = 100
 
 CSV_COLUMNS = (
     "mastr_unit_id",
@@ -33,73 +43,114 @@ CSV_COLUMNS = (
     "is_repowering_candidate",
     "flags",
 )
+REJECT_CSV_COLUMNS = ("source_file", "record_index", "record_id", "reason_code", "detail")
 
 
-def build_report(result: PipelineResult, run_id: str, db_info: dict | None) -> dict:
-    cfg = result.config
-    targets = result.targets
-    staged = len(targets)
+class ReportBuilder:
+    def __init__(self) -> None:
+        self.staged = 0
+        self.by_status = Counter()
+        self.by_bucket = Counter()
+        self.by_precision = Counter()
+        self.flags = Counter()
+        self.flag_examples: dict[str, str] = {}
+        self.candidates = 0
+        self.candidate_kw = 0.0
+        self.candidates_by_year = Counter()
+        self.invented: list[str] = []
+        self.invented_count = 0
+        self.without_basis: list[str] = []
+        self.without_basis_count = 0
+        self.rejects_by_reason = Counter()
+        self.reject_samples: list[Reject] = []
 
-    by_status = Counter(t["expiry_status"] for t in targets)
-    candidates = [t for t in targets if t["is_repowering_candidate"]]
+    def add_target(self, row: dict) -> None:
+        uid = row["mastr_unit_id"]
+        self.staged += 1
+        self.by_status[row["expiry_status"]] += 1
+        self.by_bucket[row["expiry_bucket"]] += 1
+        self.by_precision[row["spatial_precision"]] += 1
+        for code in row["flags"]:
+            self.flags[code] += 1
+            self.flag_examples.setdefault(code, uid)
+        if row["is_repowering_candidate"]:
+            self.candidates += 1
+            self.candidate_kw += row["net_power_kw"] or 0
+            self.candidates_by_year[row["expiry_year"]] += 1
+        # Acceptance evidence, recomputed from the staged rows.
+        if row["expiry_status"] == "incomplete" and row["expiry_year"] is not None:
+            self.invented_count += 1
+            if len(self.invented) < ID_LIST_LIMIT:
+                self.invented.append(uid)
+        if row["expiry_year"] is not None and row["eeg_commissioning_date"] is None:
+            self.without_basis_count += 1
+            if len(self.without_basis) < ID_LIST_LIMIT:
+                self.without_basis.append(uid)
 
-    # Acceptance evidence, recomputed from the staged rows.
-    invented = [
-        t["mastr_unit_id"]
-        for t in targets
-        if t["expiry_status"] == "incomplete" and t["expiry_year"] is not None
-    ]
-    without_basis = [
-        t["mastr_unit_id"]
-        for t in targets
-        if t["expiry_year"] is not None and t["eeg_commissioning_date"] is None
-    ]
+    def add_reject(self, reject: Reject) -> None:
+        self.rejects_by_reason[reject.reason_code] += 1
+        if len(self.reject_samples) < REJECT_SAMPLE_LIMIT:
+            self.reject_samples.append(reject)
 
-    return {
-        "run_id": run_id,
-        "rule_version": RULE_VERSION,
-        "scope": cfg.scope,
-        "reference_date": cfg.reference_date.isoformat(),
-        "horizon_years": cfg.horizon_years,
-        "result_digest": result.digest,
-        "sources": [
-            {"kind": s.kind, "file": s.name, "sha256": s.sha256, "size_bytes": s.size_bytes}
-            for s in result.unit_sources + result.eeg_sources
-        ],
-        "counts": result.stats,
-        "staged_by_status": dict(sorted(by_status.items())),
-        "coverage_confirmed_pct": round(100 * by_status["confirmed"] / staged, 1) if staged else 0.0,
-        "coverage_with_expiry_pct": round(100 * (staged - by_status["incomplete"]) / staged, 1)
-        if staged
-        else 0.0,
-        "staged_by_bucket": dict(sorted(Counter(t["expiry_bucket"] for t in targets).items())),
-        "spatial_precision": dict(sorted(Counter(t["spatial_precision"] for t in targets).items())),
-        "flags": {
-            code: {"count": n, "severity": FLAG_SEVERITY[code]}
-            for code, n in sorted(Counter(f for t in targets for f in t["flags"]).items())
-        },
-        "rejects_by_reason": dict(sorted(Counter(r.reason_code for r in result.rejects).items())),
-        "rejects": [
-            {
-                "source": f"{r.source_file}#{r.record_index}",
-                "record_id": r.record_id,
-                "reason": r.reason_code,
-                "detail": r.detail,
-            }
-            for r in sorted(result.rejects, key=lambda r: (r.source_file, r.record_index))
-        ],
-        "repowering_candidates": {
-            "count": len(candidates),
-            "net_power_kw": round(sum(t["net_power_kw"] or 0 for t in candidates), 2),
-            "by_expiry_year": dict(sorted(Counter(t["expiry_year"] for t in candidates).items())),
-        },
-        "acceptance_checks": {
-            "incomplete_rows_with_expiry": invented,
-            "expiry_without_eeg_date": without_basis,
-            "passed": not invented and not without_basis,
-        },
-        "database": db_info,
-    }
+    def build(
+        self,
+        cfg: RunConfig,
+        sources: list[SourceFile],
+        stats: dict,
+        digest: str,
+        run_id: str,
+        db_info: dict | None,
+    ) -> dict:
+        staged = self.staged
+        rejected = sum(self.rejects_by_reason.values())
+        return {
+            "run_id": run_id,
+            "rule_version": RULE_VERSION,
+            "scope": cfg.scope,
+            "reference_date": cfg.reference_date.isoformat(),
+            "horizon_years": cfg.horizon_years,
+            "result_digest": digest,
+            "sources": [
+                {"kind": s.kind, "file": s.name, "sha256": s.sha256, "size_bytes": s.size_bytes}
+                for s in sources
+            ],
+            "counts": stats,
+            "staged_by_status": dict(sorted(self.by_status.items())),
+            "coverage_confirmed_pct": round(100 * self.by_status["confirmed"] / staged, 1) if staged else 0.0,
+            "coverage_with_expiry_pct": round(100 * (staged - self.by_status["incomplete"]) / staged, 1)
+            if staged
+            else 0.0,
+            "staged_by_bucket": dict(sorted(self.by_bucket.items())),
+            "spatial_precision": dict(sorted(self.by_precision.items())),
+            "flags": {
+                code: {"count": n, "severity": FLAG_SEVERITY[code], "example_unit": self.flag_examples[code]}
+                for code, n in sorted(self.flags.items())
+            },
+            "rejects_by_reason": dict(sorted(self.rejects_by_reason.items())),
+            "rejects_sample": [
+                {
+                    "source": f"{r.source_file}#{r.record_index}",
+                    "record_id": r.record_id,
+                    "reason": r.reason_code,
+                    "detail": r.detail,
+                }
+                for r in sorted(self.reject_samples, key=lambda r: (r.source_file, r.record_index))
+            ],
+            "rejects_sample_truncated": rejected > len(self.reject_samples),
+            "repowering_candidates": {
+                "count": self.candidates,
+                "net_power_kw": round(self.candidate_kw, 2),
+                "by_expiry_year": dict(sorted(self.candidates_by_year.items())),
+            },
+            "acceptance_checks": {
+                "incomplete_rows_with_expiry": self.invented_count,
+                "incomplete_rows_with_expiry_ids": self.invented,
+                "expiry_without_eeg_date": self.without_basis_count,
+                "expiry_without_eeg_date_ids": self.without_basis,
+                "passed": self.invented_count == 0 and self.without_basis_count == 0,
+            },
+            "database": db_info,
+        }
 
 
 def _scope_label(scope: str) -> str:
@@ -115,13 +166,10 @@ def _table(headers: list[str], rows: list[list]) -> str:
     return "\n".join(lines)
 
 
-def render_markdown(report: dict, result: PipelineResult) -> str:
+def render_markdown(report: dict) -> str:
     c = report["counts"]
     acc = report["acceptance_checks"]
-    examples = {}
-    for t in result.targets:
-        for code in t["flags"]:
-            examples.setdefault(code, t["mastr_unit_id"])
+    rejects = report["rejects_sample"]
 
     parts = [
         "# EEG 20-year expiry radar: quality report",
@@ -154,11 +202,12 @@ def render_markdown(report: dict, result: PipelineResult) -> str:
             [
                 ["Unit records read", c["units_read"]],
                 ["EEG records read", c["eeg_records_read"]],
-                ["Unique valid units", c["units_unique"]],
                 ["Out of scope (other region)", c["units_out_of_scope"]],
+                ["Unique valid units in scope", c["units_unique_in_scope"]],
                 ["Rejected (all reasons)", c["rejected"]],
                 ["Staged in `iris_staging.eeg_repowering_targets`", c["units_staged"]],
-                ["EEG records not linked to a staged unit", c["eeg_records_unreferenced_in_scope"]],
+                ["EEG records linked to a staged unit", c["eeg_records_linked"]],
+                ["EEG records not linked to any in-scope unit", c["eeg_records_not_linked"]],
             ],
         ),
         "",
@@ -191,7 +240,7 @@ def render_markdown(report: dict, result: PipelineResult) -> str:
         "",
         _table(
             ["Flag", "Severity", "Rows", "Example unit"],
-            [[f"`{k}`", v["severity"], v["count"], examples.get(k, "")] for k, v in report["flags"].items()],
+            [[f"`{k}`", v["severity"], v["count"], v["example_unit"]] for k, v in report["flags"].items()],
         ),
         "",
         "`blocking` = no expiry derived (`incomplete`); `review` = expiry derived but needs a human check; "
@@ -199,22 +248,29 @@ def render_markdown(report: dict, result: PipelineResult) -> str:
         "",
         "## Rejected records",
         "",
-        _table(
-            ["Source", "Record", "Reason", "Detail"],
-            [
-                [r["source"], r["record_id"] or "(none)", f"`{r['reason']}`", r["detail"]]
-                for r in report["rejects"]
-            ],
-        )
-        if report["rejects"]
+        _table(["Reason", "Records"], [[f"`{k}`", v] for k, v in report["rejects_by_reason"].items()])
+        if report["rejects_by_reason"]
         else "None.",
         "",
+    ]
+    if rejects:
+        parts += [
+            f"First {len(rejects)} rejected records (all of them are in `eeg_repowering_rejects.csv`):"
+            if report["rejects_sample_truncated"]
+            else "All rejected records:",
+            "",
+            _table(
+                ["Source", "Record", "Reason", "Detail"],
+                [[r["source"], r["record_id"] or "(none)", f"`{r['reason']}`", r["detail"]] for r in rejects],
+            ),
+            "",
+        ]
+    parts += [
         "## Acceptance evidence",
         "",
-        f"- Incomplete rows carrying an expiry date: "
-        f"{len(acc['incomplete_rows_with_expiry'])} (must be 0)",
-        f"- Expiry dates not derived from an EEG commissioning date: "
-        f"{len(acc['expiry_without_eeg_date'])} (must be 0)",
+        f"- Incomplete rows carrying an expiry date: {acc['incomplete_rows_with_expiry']} (must be 0)",
+        "- Expiry dates not derived from an EEG commissioning date: "
+        f"{acc['expiry_without_eeg_date']} (must be 0)",
         "- The database enforces the same rule with the `eeg_targets_no_invented_expiry` check constraint.",
         f"- Overall: **{'PASS' if acc['passed'] else 'FAIL'}**",
         "",
@@ -225,30 +281,84 @@ def render_markdown(report: dict, result: PipelineResult) -> str:
             "",
             f"- Rows already staged but not present in this run (kept, not deleted): "
             f"{report['database']['rows_not_seen_this_run']}",
+            f"- Assessments recorded in `eeg_repowering_target_history` for this run: "
+            f"{report['database']['history_rows_written']}",
             "",
         ]
     return "\n".join(parts)
 
 
-def write_outputs(
-    report: dict,
-    result: PipelineResult,
-    output_dir: Path,
-) -> dict[str, Path]:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    paths = {
-        "report_md": output_dir / "quality_report.md",
-        "report_json": output_dir / "quality_report.json",
-        "targets_csv": output_dir / "eeg_repowering_targets.csv",
-    }
-    paths["report_md"].write_text(render_markdown(report, result), encoding="utf-8")
-    paths["report_json"].write_text(
-        json.dumps(report, indent=2, ensure_ascii=False, default=json_default) + "\n",
-        encoding="utf-8",
+class OutputFiles:
+    """
+    Streams both CSVs to *.partial files and renames them on success, so a
+    failed run never leaves a half-written file under the final name.
+    """
+
+    def __init__(self, output_dir: Path) -> None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir = output_dir
+        self.paths = {
+            "targets_csv": output_dir / "eeg_repowering_targets.csv",
+            "rejects_csv": output_dir / "eeg_repowering_rejects.csv",
+            "report_md": output_dir / "quality_report.md",
+            "report_json": output_dir / "quality_report.json",
+        }
+        self._handles = {}
+        self._writers = {}
+        for key, columns in (("targets_csv", CSV_COLUMNS), ("rejects_csv", REJECT_CSV_COLUMNS)):
+            handle = self._partial(key).open("w", newline="", encoding="utf-8")
+            writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+            writer.writeheader()
+            self._handles[key], self._writers[key] = handle, writer
+
+    def _partial(self, key: str) -> Path:
+        path = self.paths[key]
+        return path.with_name(path.name + ".partial")
+
+    def add_target(self, row: dict) -> None:
+        self._writers["targets_csv"].writerow({**row, "flags": ";".join(row["flags"])})
+
+    def add_reject(self, reject: Reject) -> None:
+        self._writers["rejects_csv"].writerow(
+            {
+                "source_file": reject.source_file,
+                "record_index": reject.record_index,
+                "record_id": reject.record_id,
+                "reason_code": reject.reason_code,
+                "detail": reject.detail,
+            }
+        )
+
+    def finish(self, report: dict) -> dict[str, Path]:
+        for handle in self._handles.values():
+            handle.close()
+        for key in ("targets_csv", "rejects_csv"):
+            self._partial(key).replace(self.paths[key])
+        self.paths["report_md"].write_text(render_markdown(report), encoding="utf-8")
+        self.paths["report_json"].write_text(
+            json.dumps(report, indent=2, ensure_ascii=False, default=json_default) + "\n",
+            encoding="utf-8",
+        )
+        return self.paths
+
+    def abort(self) -> None:
+        for key, handle in self._handles.items():
+            handle.close()
+            self._partial(key).unlink(missing_ok=True)
+
+
+def build_report(result: PipelineResult, run_id: str, db_info: dict | None) -> dict:
+    """Report for an in-memory result (tests and small runs)."""
+    builder = ReportBuilder()
+    for row in result.targets:
+        builder.add_target(row)
+    for reject in result.rejects:
+        builder.add_reject(reject)
+    return builder.build(
+        result.config,
+        result.unit_sources + result.eeg_sources,
+        result.stats,
+        result.digest,
+        run_id,
+        db_info,
     )
-    with paths["targets_csv"].open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS, extrasaction="ignore")
-        writer.writeheader()
-        for row in result.targets:
-            writer.writerow({**row, "flags": ";".join(row["flags"])})
-    return paths

@@ -217,4 +217,29 @@
     <AnlagenschluesselEeg>E10000000000000000000000000000037</AnlagenschluesselEeg>
     <VerknuepfteEinheitenMaStRNummern>SEE900000000037</VerknuepfteEinheitenMaStRNummern>
   </AnlageEegSolar>
+  <AnlageEegSolar>
+    <EegMaStRNummer>EEG900000000037</EegMaStRNummer>
+    <DatumLetzteAktualisierung>2024-03-01T09:00:00</DatumLetzteAktualisierung>
+    <EegInbetriebnahmedatum>2018-08-01</EegInbetriebnahmedatum>
+    <AnlagenschluesselEeg>E10000000000000000000000000000037</AnlagenschluesselEeg>
+    <InstallierteLeistung>2400</InstallierteLeistung>
+    <VerknuepfteEinheitenMaStRNummern>SEE900000000037</VerknuepfteEinheitenMaStRNummern>
+  </AnlageEegSolar>
+  <AnlageEegSolar>
+    <EegMaStRNummer>EEG900000000038</EegMaStRNummer>
+    <DatumLetzteAktualisierung>2024-03-01T09:00:00</DatumLetzteAktualisierung>
+    <EegInbetriebnahmedatum>2019-05-01</EegInbetriebnahmedatum>
+    <AnlagenschluesselEeg>E10000000000000000000000000000038</AnlagenschluesselEeg>
+    <InstallierteLeistung>1500</InstallierteLeistung>
+    <Zuschlagsnummer>SOL19-1-012</Zuschlagsnummer>
+    <VerknuepfteEinheitenMaStRNummern>SEE900000000038</VerknuepfteEinheitenMaStRNummern>
+  </AnlageEegSolar>
+  <AnlageEegSolar>
+    <EegMaStRNummer>EEG900000000039</EegMaStRNummer>
+    <DatumLetzteAktualisierung>2024-03-01T09:00:00</DatumLetzteAktualisierung>
+    <EegInbetriebnahmedatum>2007-03-03</EegInbetriebnahmedatum>
+    <AnlagenschluesselEeg>E10000000000000000000000000000039</AnlagenschluesselEeg>
+    <InstallierteLeistung>9.8</InstallierteLeistung>
+    <VerknuepfteEinheitenMastrNummern>SEE900000000039</VerknuepfteEinheitenMastrNummern>
+  </AnlageEegSolar>
 </AnlagenEegSolar>

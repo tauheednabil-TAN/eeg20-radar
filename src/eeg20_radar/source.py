@@ -10,7 +10,7 @@ import hashlib
 import logging
 import xml.etree.ElementTree as ET
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 UNIT_FILE_GLOB = "EinheitenSolar*.xml"
@@ -40,9 +40,20 @@ class SourceRecord:
     file: str
     index: int  # 1-based position of the record inside its file
     fields: dict[str, str | None]
+    _lower: dict[str, str] | None = field(default=None, compare=False, repr=False)
 
     def get(self, key: str) -> str | None:
-        return self.fields.get(key)
+        """
+        Field lookup that ignores case on a miss. MaStR spells the same
+        abbreviation both ways (EinheitMastrNummer, EegMaStRNummer), and the
+        spelling has changed between export releases.
+        """
+        if key in self.fields:
+            return self.fields[key]
+        if self._lower is None:
+            object.__setattr__(self, "_lower", {name.lower(): name for name in self.fields})
+        name = self._lower.get(key.lower())
+        return self.fields[name] if name is not None else None
 
 
 def _sha256(path: Path) -> str:
@@ -79,19 +90,25 @@ def iter_records(
     logger: logging.Logger,
 ) -> Iterator[SourceRecord]:
     """
-    Streams records so multi-GB export files never sit in memory. A file
-    that is not well-formed XML aborts the run (SourceError): a partial
-    file must not be staged as if it were complete.
+    Yields one record at a time. After each record the root element is
+    cleared, so finished records do not pile up in the parse tree and memory
+    stays flat however large the file is. A file that is not well-formed XML
+    aborts the run (SourceError): a partial file must not be staged as if it
+    were complete.
     """
     index = 0
+    root = None
     try:
-        for _, elem in ET.iterparse(source.path, events=("end",)):
-            if _local(elem.tag) != record_tag:
+        for event, elem in ET.iterparse(source.path, events=("start", "end")):
+            if root is None:
+                root = elem
+                continue
+            if event != "end" or _local(elem.tag) != record_tag:
                 continue
             index += 1
             fields = {_local(child.tag): (child.text.strip() if child.text else None) for child in elem}
             yield SourceRecord(source.name, index, fields)
-            elem.clear()
+            root.clear()
     except ET.ParseError as exc:
         logger.error(
             "Malformed XML after %d records: %s",

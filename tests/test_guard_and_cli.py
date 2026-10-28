@@ -54,10 +54,13 @@ def test_cli_file_only_run(tmp_path):
     report = json.loads((tmp_path / "quality_report.json").read_text())
     assert report["acceptance_checks"]["passed"] is True
     assert report["scope"] == "NW"
-    assert report["counts"]["units_staged"] == 29
+    assert report["counts"]["units_staged"] == 32
     assert "Acceptance evidence" in (tmp_path / "quality_report.md").read_text()
     lines = (tmp_path / "eeg_repowering_targets.csv").read_text().splitlines()
-    assert len(lines) == 30
+    assert len(lines) == 33
+    rejects = (tmp_path / "eeg_repowering_rejects.csv").read_text().splitlines()
+    assert len(rejects) == 9
+    assert not list(tmp_path.glob("*.partial"))
 
 
 def test_cli_without_database_url(monkeypatch, tmp_path):
@@ -97,3 +100,40 @@ def test_settings_defaults():
     assert s.scope == "NRW"
     assert s.target_schema == "iris_staging"
     assert s.reference_date is None
+
+
+def test_cli_failed_run_leaves_no_output_files(tmp_path):
+    import shutil
+
+    src = tmp_path / "src"
+    src.mkdir()
+    shutil.copy(FIXTURES / "AnlagenEegSolar_1.xml", src)
+    units = (FIXTURES / "EinheitenSolar_1.xml").read_text(encoding="utf-8")
+    (src / "EinheitenSolar_1.xml").write_text(units[: len(units) // 2], encoding="utf-8")
+    out = tmp_path / "out"
+
+    code = main(
+        [
+            "run",
+            "--no-db",
+            "--source-dir",
+            str(src),
+            "--reference-date",
+            "2026-01-01",
+            "--output-dir",
+            str(out),
+        ]
+    )
+    assert code == 1
+    assert list(out.iterdir()) == []
+
+
+def test_report_caps_reject_samples():
+    from eeg20_radar.pipeline import Reject
+    from eeg20_radar.report import REJECT_SAMPLE_LIMIT, ReportBuilder
+
+    builder = ReportBuilder()
+    for i in range(REJECT_SAMPLE_LIMIT + 50):
+        builder.add_reject(Reject("f.xml", i + 1, None, "MISSING_UNIT_ID", "empty", {}))
+    assert len(builder.reject_samples) == REJECT_SAMPLE_LIMIT
+    assert builder.rejects_by_reason["MISSING_UNIT_ID"] == REJECT_SAMPLE_LIMIT + 50

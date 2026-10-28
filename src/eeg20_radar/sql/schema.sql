@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS iris_staging.eeg_repowering_targets (
     mastr_unit_id            text PRIMARY KEY,
     eeg_mastr_id             text,
     eeg_plant_key            text,
+    tender_award_number      text,
     unit_name                text,
     unit_status_code         text,
     unit_status              text NOT NULL,
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS iris_staging.eeg_repowering_targets (
     spatial_precision        text NOT NULL,
     gross_power_kw           double precision,
     net_power_kw             double precision,
+    eeg_installed_power_kw   double precision,
     unit_commissioning_date  date,
     eeg_commissioning_date   date,
     remuneration_end_date    date,
@@ -69,6 +71,11 @@ CREATE TABLE IF NOT EXISTS iris_staging.eeg_repowering_targets (
     )
 );
 
+-- Columns added after the first release; no-ops on a fresh database.
+ALTER TABLE iris_staging.eeg_repowering_targets
+    ADD COLUMN IF NOT EXISTS tender_award_number text,
+    ADD COLUMN IF NOT EXISTS eeg_installed_power_kw double precision;
+
 CREATE INDEX IF NOT EXISTS eeg_targets_geom_gix
     ON iris_staging.eeg_repowering_targets USING gist (geom);
 CREATE INDEX IF NOT EXISTS eeg_targets_expiry_year_idx
@@ -89,3 +96,27 @@ CREATE TABLE IF NOT EXISTS iris_staging.eeg_repowering_rejects (
 
 CREATE INDEX IF NOT EXISTS eeg_rejects_run_idx
     ON iris_staging.eeg_repowering_rejects (run_id);
+
+-- One row per unit per run, holding the assessment at that run's reference
+-- date. eeg_repowering_targets holds only the latest one; this table keeps
+-- last year's result after an annual refresh.
+CREATE TABLE IF NOT EXISTS iris_staging.eeg_repowering_target_history (
+    run_id                   text NOT NULL REFERENCES iris_staging.eeg_ingestion_runs (run_id),
+    mastr_unit_id            text NOT NULL,
+    reference_date           date NOT NULL,
+    horizon_years            integer NOT NULL,
+    rule_version             text NOT NULL,
+    eeg_commissioning_date   date,
+    remuneration_end_date    date,
+    expiry_year              integer,
+    expiry_status            text NOT NULL,
+    expiry_bucket            text NOT NULL,
+    is_repowering_candidate  boolean NOT NULL,
+    flags                    text[] NOT NULL,
+    unit_record_hash         text NOT NULL,
+    eeg_record_hash          text,
+    PRIMARY KEY (run_id, mastr_unit_id)
+);
+
+CREATE INDEX IF NOT EXISTS eeg_history_unit_idx
+    ON iris_staging.eeg_repowering_target_history (mastr_unit_id, reference_date);
